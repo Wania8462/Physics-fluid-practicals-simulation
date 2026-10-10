@@ -51,6 +51,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Window
   background: {fileID: 7257688096821844917}
+  fieldPrefab: {fileID: 5409782899094780228, guid: 6f232402c93bbee4a8121eee1b074f76, type: 3}
+  title: {fileID: 4106958014137217827}
   topBarHeld: 0
 --- !u!1 &1151355974179046838
 GameObject:
@@ -521,7 +523,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 27427035823564922}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 8974425659324763465}
+        m_TargetAssemblyTypeName: Window, Assembly-CSharp
+        m_MethodName: ToggleMinimize
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument:
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!1 &6515339575786947595
 GameObject:
   m_ObjectHideFlags: 0
@@ -864,7 +878,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 4677203452477719629}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 8974425659324763465}
+        m_TargetAssemblyTypeName: Window, Assembly-CSharp
+        m_MethodName: Close
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument:
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!1 &8735831150336249280
 GameObject:
   m_ObjectHideFlags: 0

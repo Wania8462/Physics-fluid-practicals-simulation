@@ -312,9 +312,7 @@ public class SimulationManager : MonoBehaviour
     // Empties the slot of a body. The other bodies keep their slots, positions and motion
     internal void RemoveBody(int id)
     {
-        if (id < 0 || id >= settings.bodies.Length || settings.bodies[id].IsEmpty)
-            throw new ArgumentException($"There is no rigid body with id {id}.", nameof(id));
-
+        CheckBodyId(id);
         settings.bodies[id] = default;
 
         // Before Setup there is no body data yet
@@ -323,6 +321,43 @@ public class SimulationManager : MonoBehaviour
         ReadBodyStates();
         RigidBodies3D.RemoveBody(bodies, id);
         RebuildBodies();
+    }
+
+    // UpdateComputeSettings applies masses every frame, so only the slot changes
+    internal void SetBodyMass(int id, float mass)
+    {
+        CheckBodyId(id);
+        settings.bodies[id].boundaryBodyMass = mass;
+    }
+
+    // Rebuilds a body with a new shape and size where it is now. It keeps its rotation but stops, the other bodies keep
+    // their motion
+    internal void ReshapeBody(int id, BodyShape3D shape, float radius)
+    {
+        CheckBodyId(id);
+        ref RigidBodySettings3D body = ref settings.bodies[id];
+        body.shape = shape;
+        body.bodyRadius = radius;
+
+        // Before Setup there is no body data yet, and Setup builds every body in the array
+        if (bodies == null) return;
+
+        ReadBodyStates();
+        RigidBodyState3D state = bodies.states[bodies.inspectorIndices.IndexOf(id)];
+
+        // Cubes and spheres balance at their centre, so the centre of mass is the body position. Both rotations are ZXY
+        body.bodyPosition = state.position.xyz;
+        body.bodyRotation = ((Quaternion)new quaternion(state.rotation)).eulerAngles;
+
+        RigidBodies3D.RemoveBody(bodies, id);
+        RigidBodies3D.AddBody(bodies, body, id, spawn);
+        RebuildBodies();
+    }
+
+    private void CheckBodyId(int id)
+    {
+        if (id < 0 || id >= settings.bodies.Length || settings.bodies[id].IsEmpty)
+            throw new ArgumentException($"There is no rigid body with id {id}.", nameof(id));
     }
 
     // The GPU moves the bodies, so the CPU only has their start poses until the current states are copied back

@@ -1,5 +1,4 @@
-using Unity.Mathematics;
-
+// Real units: m/s², kg/m³, mPa·s, m³ and kg
 public interface ISImulationAPI
 {
     // General
@@ -13,6 +12,8 @@ public interface ISImulationAPI
     public void SetViscosity(float viscosity);
 
     // Bodies
-    public int AddBody(BodyShape3D shape, float3 position, float radius, float mass);
+    public int AddBody(BodyShape3D shape, float volume, float mass);
+    public void SetBodyMass(int id, float mass);
+    public void SetBodyShape(int id, BodyShape3D shape, float volume);
     public void RemoveBody(int id);
 }

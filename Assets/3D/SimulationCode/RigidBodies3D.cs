@@ -69,8 +69,8 @@ public class RigidBodyData3D
     public int NumBoundaryParticles => boundaryPositions.Count;
 }
 
-// Adding a shape: a BodyShape3D value, a sampler in Spawn3DParticles, cases in SampleSurface, SetMassProperties and
-// SignedDistance below, and a signed distance with a mask term in RigidBodyMath3D.hlsl
+// Adding a shape: a BodyShape3D value, a sampler in Spawn3DParticles, cases in SampleSurface, SetMassProperties,
+// RadiusFromVolume and SignedDistance below, and a signed distance with a mask term in RigidBodyMath3D.hlsl
 public static class RigidBodies3D
 {
     public const int MaxBodies = 10;
@@ -206,6 +206,14 @@ public static class RigidBodies3D
         properties.invMass = 1 / mass;
         properties.invInertia = new float4(new float3(1 / inertia), 0);
     }
+
+    // The bodyRadius that gives a body this volume: sphere radius, or half the edge length of a cube
+    public static float RadiusFromVolume(BodyShape3D shape, float volume) => shape switch
+    {
+        BodyShape3D.Cube => math.pow(volume, 1f / 3) / 2,
+        BodyShape3D.Sphere => math.pow(3 * volume / (4 * math.PI), 1f / 3),
+        _ => throw new ArgumentOutOfRangeException(nameof(shape), $"Rigid bodies: no volume for shape {shape}")
+    };
 
     // Mass is the only body setting applied live; shape, size, sampling and pose need a reset
     public static void UpdateMasses(RigidBodyData3D data, RigidBodySettings3D[] inspectorBodies, ComputeBuffer propertiesBuffer)

@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 public class CameraController : MonoBehaviour
 {
@@ -8,19 +9,34 @@ public class CameraController : MonoBehaviour
 
     private float yaw;
     private float pitch;
+    private bool cameraMode;
 
     void Start()
     {
-        Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
+        SetCameraMode(true);
 
         Vector3 angles = cam.eulerAngles;
         yaw = angles.y;
         pitch = angles.x;
     }
 
+    void SetCameraMode(bool on)
+    {
+        cameraMode = on;
+        Cursor.lockState = on ? CursorLockMode.Locked : CursorLockMode.None;
+        Cursor.visible = !on;
+    }
+
     void Update()
     {
+        if (Input.GetKeyDown(KeyCode.Escape))
+            SetCameraMode(!cameraMode);
+        else if (!cameraMode && Input.GetMouseButtonDown(0) && !EventSystem.current.IsPointerOverGameObject())
+            SetCameraMode(true);
+
+        if (!cameraMode)
+            return;
+
         yaw += Input.GetAxis("Mouse X") * mouseSensitivity;
         pitch -= Input.GetAxis("Mouse Y") * mouseSensitivity;
         pitch = Mathf.Clamp(pitch, -89f, 89f);
