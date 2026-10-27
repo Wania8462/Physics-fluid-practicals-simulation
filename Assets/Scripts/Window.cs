@@ -119,6 +119,13 @@ public class Window : MonoBehaviour
         fieldUIs[index].Bind(field, index);
     }
 
+    public void SetToggle(int index, bool isOn)
+    {
+        Field field = fields[index];
+        field.isOn = isOn;
+        SetField(index, field);
+    }
+
     private void ResizeBackground(int totalHeight)
     {
         background.pivot = new Vector2(background.pivot.x, 1f);

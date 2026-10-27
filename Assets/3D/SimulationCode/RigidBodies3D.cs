@@ -82,6 +82,9 @@ public static class RigidBodies3D
     public const int CouplingSlotSize = 2;
     public const int ContactSlotSize = 16;
 
+    // Forces per body in BodyForces, matching BodyForceCount in RigidBodyMath3D.hlsl
+    public const int ForceCount = 3;
+
     public static RigidBodyData3D Build(RigidBodySettings3D[] inspectorBodies, Spawn3DParticles spawn, float interactionRadius, Tank tank)
     {
         RigidBodyData3D data = new();
@@ -267,6 +270,7 @@ public static class RigidBodies3D
         buffers["BodyStates"] = CreateNonEmptyBuffer(data.states);
         buffers["BodyCouplingSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * CouplingSlotSize);
         buffers["BodyContactSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * ContactSlotSize);
+        buffers["BodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
 
         // Read-only aliases share the instances above, see the note in Simulation.compute
         buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];

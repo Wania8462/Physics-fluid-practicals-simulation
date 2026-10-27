@@ -18,6 +18,7 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private GameObject sideMenu;
     [SerializeField] private GameObject windowPrefab;
     [SerializeField] private SimulationAPI api;
+    [SerializeField] private RenderAPI renderApi;
 
     public void OnSideMenuClick()
     {
@@ -88,31 +89,43 @@ public class WindowManager : MonoBehaviour
         window.FieldChanged += _ => api.SetGravity(-window.fields[0].value);
     }
 
-    // Nothing draws the forces yet, so the toggles only keep the resultant on its own: it is the sum of the others
+    // One toggle per BodyForce, then one for their values, starting as they are drawn now. The resultant is the sum of the
+    // others, so it is never drawn alongside them
     public void CreateVisualisationWindow()
     {
-        string[] forces = { "Gravity", "Contact", "Buoyancy", "Resultant" };
-        int resultant = forces.Length - 1;
+        const int Resultant = (int)BodyForce.Resultant;
+        BodyForce[] forces = (BodyForce[])Enum.GetValues(typeof(BodyForce));
+        int values = forces.Length;
 
-        Window window = CreateWindow("Visualisation",
-            forces.Select(force => new Field { name = force, fieldType = FieldType.Toggle }).ToArray());
+        renderApi.SetNewtonScale(api.ForceScale);
 
-        void TurnOff(int index)
-        {
-            Field field = window.fields[index];
-            field.isOn = false;
-            window.SetField(index, field);
-        }
+        Window window = CreateWindow("Visualisation", forces
+            .Select(force => new Field { name = force.ToString(), fieldType = FieldType.Toggle, isOn = renderApi.IsForceDrawn(force) })
+            .Append(new Field { name = "Values", fieldType = FieldType.Toggle, isOn = renderApi.AreForceValuesDrawn() })
+            .ToArray());
 
         window.FieldChanged += index =>
         {
-            if (!window.fields[index].isOn) return;
+            if (index == values)
+            {
+                renderApi.DrawForceValues(window.fields[values].isOn);
+                return;
+            }
 
-            if (index == resultant)
-                for (int i = 0; i < resultant; i++)
-                    TurnOff(i);
-            else
-                TurnOff(resultant);
+            bool turnedOn = window.fields[index].isOn;
+
+            if (turnedOn && index == Resultant)
+            {
+                for (int i = 0; i < Resultant; i++)
+                    window.SetToggle(i, false);
+            }
+            else if (turnedOn)
+            {
+                window.SetToggle(Resultant, false);
+            }
+
+            foreach (BodyForce force in forces)
+                renderApi.DrawForce(force, window.fields[(int)force].isOn);
         };
     }
 

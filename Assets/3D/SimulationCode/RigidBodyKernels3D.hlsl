@@ -248,6 +248,7 @@ void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
     RigidBodyState state = BodyStates[id.x];
 
     state.velocity.y += dt * gravity;
+    BodyForces[id.x * BodyForceCount + ForceGravity] = float4(0, gravity / BodyProperties[id.x].invMass, 0, 0);
     state.prevPosition = state.position;
     state.prevRotation = state.rotation;
     state.position += dt * state.velocity;
@@ -298,6 +299,9 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
         force += BodyCouplingSums[slot].xyz;
         torque += BodyCouplingSums[slot + 1].xyz;
     }
+
+    // The push moves the position alone, so it all becomes velocity: dv = invMass * force / dt, and F = M dv / dt
+    BodyForces[id.x * BodyForceCount + ForceBuoyancy] = float4(force / (dt * dt), 0);
 
     float3x3 invInertiaWorld = InverseInertiaWorld(state.rotation, properties.invInertia.xyz);
     state.position.xyz += properties.invMass * force;
@@ -477,6 +481,9 @@ void ApplyContacts (uint3 id : SV_DispatchThreadID)
         angleChange += mul(invInertiaWorld, torque) / contacts;
         approachChange += approach / contacts;
     }
+
+    // The push moves both positions, so only the friction and the removed approach change the velocity
+    BodyForces[id.x * BodyForceCount + ForceContact] = float4((frictionChange - approachChange) / (properties.invMass * dt * dt), 0);
 
     state.position.xyz += pushChange + frictionChange;
     state.prevPosition.xyz += pushChange + approachChange;

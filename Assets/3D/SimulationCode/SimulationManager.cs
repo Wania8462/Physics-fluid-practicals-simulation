@@ -44,8 +44,6 @@ public class SimulationManager : MonoBehaviour
     [SerializeField] private Spawn3DParticles spawn;
     private SPValues3D SP;
 
-    public bool Running { get; private set; }
-
     // Renderers are in an assembly that references this one, so they subscribe here instead of being called
     // Raised after Setup or a body change rebuilds the buffers
     public event Action<SimulationManager> BuffersChanged;
@@ -112,9 +110,7 @@ public class SimulationManager : MonoBehaviour
 
     private void ExecuteStep()
     {
-        Running = true;
         Watcher.ExecuteWithTimer("1. Time step", SimulationStep);
-        Running = false;
     }
 
     private void SimulationStep()

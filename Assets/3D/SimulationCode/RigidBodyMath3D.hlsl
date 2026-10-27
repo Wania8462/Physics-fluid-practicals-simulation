@@ -8,6 +8,12 @@ static const uint ShapeSphere = 1;
 // Threads per body in the strided reduction kernels, matching RigidBodies3D.ReductionThreads
 #define BodyReductionThreads 64
 
+// Forces on a body in BodyForces, in this order, matching BodyForce in Visualiser.cs and RigidBodies3D.ForceCount
+#define BodyForceCount 3
+static const uint ForceGravity = 0;
+static const uint ForceContact = 1;
+static const uint ForceBuoyancy = 2;
+
 // Largest rotation, in radians, that one coupling or contact correction may apply
 static const float MaxCorrectionAngle = 0.2f;
 

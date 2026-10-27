@@ -23,6 +23,8 @@ public class SimulationAPI : MonoBehaviour
     // and compression, so an ice cube floating about 90% under is the check
     private float MassScale => densityScale * 30 / (4 * math.PI * math.pow(manager.InteractionRadius, 3)) * math.pow(lengthScale, 3);
 
+    // Sim force of 1 N. Accelerations are scaled like gravity, so a body's weight comes out as m g
+    public float ForceScale => MassScale * gravityScale;
     public float GetGravity()
     {
         return manager.settings.gravity / gravityScale;
@@ -30,7 +32,6 @@ public class SimulationAPI : MonoBehaviour
 
     public void SetGravity(float gravity)
     {
-        ThrowIfRunning();
         manager.settings.gravity = gravity * gravityScale;
     }
 
@@ -41,7 +42,6 @@ public class SimulationAPI : MonoBehaviour
 
     public void SetDensity(float density)
     {
-        ThrowIfRunning();
         manager.settings.restDensity = density * densityScale;
     }
 
@@ -52,7 +52,6 @@ public class SimulationAPI : MonoBehaviour
 
     public void SetViscosity(float viscosity)
     {
-        ThrowIfRunning();
         manager.settings.lowViscosity = viscosity * viscosityScale;
     }
 
@@ -60,8 +59,6 @@ public class SimulationAPI : MonoBehaviour
     // isn't, and returns its id
     public int AddBody(BodyShape3D shape, float volume, float mass)
     {
-        ThrowIfRunning();
-
         float radius = ToSimRadius(shape, volume);
 
         if (mass <= 0)
@@ -88,8 +85,6 @@ public class SimulationAPI : MonoBehaviour
 
     public void SetBodyMass(int id, float mass)
     {
-        ThrowIfRunning();
-
         if (mass <= 0)
             throw new ArgumentOutOfRangeException(nameof(mass), mass, "The mass has to be above 0.");
 
@@ -99,13 +94,11 @@ public class SimulationAPI : MonoBehaviour
     // Rebuilds the body with a new shape or volume where it is now
     public void SetBodyShape(int id, BodyShape3D shape, float volume)
     {
-        ThrowIfRunning();
         manager.ReshapeBody(id, shape, ToSimRadius(shape, volume));
     }
 
     public void RemoveBody(int id)
     {
-        ThrowIfRunning();
         manager.RemoveBody(id);
     }
 
@@ -115,11 +108,5 @@ public class SimulationAPI : MonoBehaviour
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The volume has to be above 0.");
 
         return RigidBodies3D.RadiusFromVolume(shape, volume * math.pow(lengthScale, 3));
-    }
-
-    private void ThrowIfRunning()
-    {
-        if (manager.Running)
-            throw new InvalidOperationException("Cannot change simulation properties while the simulation is running.");
     }
 }

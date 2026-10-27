@@ -15,6 +15,8 @@ public class RenderManager : MonoBehaviour
     [SerializeField] private ParticleRenerer particleRenderer;
     [SerializeField] private BodyRenderer bodyRenderer;
     [SerializeField] private ScreenSpaceFluidRenderer screenSpaceFluidRenderer;
+    [Tooltip("Draws the forces on the bodies. Optional, scenes without force arrows can leave it empty")]
+    [SerializeField] private Visualiser visualiser;
     [Tooltip("Billboards draws every particle as a flat disc. ScreenSpace draws the fluid as one smooth, refractive surface with the screen-space fluid renderer")]
     [SerializeField] private FluidRenderMode fluidRenderMode = FluidRenderMode.Billboards;
     [Tooltip("Draw rigid bodies as solid meshes instead of as their boundary particles")]
@@ -31,6 +33,9 @@ public class RenderManager : MonoBehaviour
         // Only needed in screen-space mode, so leaving it unassigned isn't an error while the fluid is drawn as billboards
         if (screenSpaceFluidRenderer != null || fluidRenderMode == FluidRenderMode.ScreenSpace)
             TrySetup(screenSpaceFluidRenderer, () => screenSpaceFluidRenderer.Setup(sim, bodyRenderer));
+
+        if (visualiser != null)
+            TrySetup(visualiser, () => visualiser.Setup(sim));
     }
 
     // One renderer failing to set up doesn't stop the others. Clicking the error selects the renderer that failed
@@ -67,6 +72,9 @@ public class RenderManager : MonoBehaviour
             bodyRenderer.DrawBodies();
         else
             particleRenderer.DrawBoundaryParticles();
+
+        if (visualiser != null)
+            visualiser.Draw();
     }
 
     // Runs before SimulationManager.Start, so the first BuffersChanged isn't missed
