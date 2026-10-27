@@ -57,7 +57,7 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
 
             float4 frag(v2f i, out float depth : SV_Depth) : SV_Target
             {
-                float r2 = dot(i.corner, i.corner);
+                float r2 = dot(i.corner, i.corner); // equivalent to x^2 + y^2
                 clip(1 - r2);
 
                 // The sphere surface bulges towards the camera from the quad. Clamped to the near plane, so a sphere around

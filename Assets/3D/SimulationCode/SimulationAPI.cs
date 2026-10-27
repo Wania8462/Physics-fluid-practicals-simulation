@@ -1,61 +1,59 @@
 using System;
 using Unity.Mathematics;
+using UnityEngine;
 
-public class SimulationAPI : ISImulationAPI
+// Real units: m/s², kg/m³, mPa·s, m³ and kg
+public class SimulationAPI : MonoBehaviour
 {
     private const float BodySampleDensity = 1;
     private const float SpawnDistance = 0.6f;   // Of the tank's largest side, in front of the camera
 
+    [SerializeField] private SimulationManager manager;
+
     // ponytail: hand-picked so the 3DSandbox values read as water on Earth, not measured. Each scale maps one quantity on
     // its own, so together they aren't a consistent unit system. Calibrate them against what the practicals should show
-    private const float LengthScale = 200;          // Sim units per metre, the 250 unit tank is 1.25 m wide
-    private const float DensityScale = 5f / 1000;   // restDensity per kg/m³, 5 is water
-    private const float GravityScale = 20 / 9.81f;  // Sim gravity per m/s², -20 is Earth
-    private const float ViscosityScale = 1;         // lowViscosity per mPa·s, 1 is water
-
-    private SimulationManager manager;
-
-    public SimulationAPI(SimulationManager _manager)
-    {
-        manager = _manager;
-    }
+    [Header("Unit scales")]
+    [SerializeField] private float lengthScale = 200;           // Sim units per metre, the 250 unit tank is 1.25 m wide
+    [SerializeField] private float densityScale = 5f / 1000;    // restDensity per kg/m³, 5 is water
+    [SerializeField] private float gravityScale = 20 / 9.81f;   // Sim gravity per m/s², -20 is Earth
+    [SerializeField] private float viscosityScale = 1;          // lowViscosity per mPa·s, 1 is water
 
     // Sim mass of 1 kg. Fluid particles weigh 1 and, for the (1 - q)² density kernel, rest at restDensity * 30 / (4π h³)
     // to a sim unit³, so a body as dense as the fluid weighs as much as the particles it displaces. Ignores near pressure
     // and compression, so an ice cube floating about 90% under is the check
-    private float MassScale => DensityScale * 30 / (4 * math.PI * math.pow(manager.InteractionRadius, 3)) * math.pow(LengthScale, 3);
+    private float MassScale => densityScale * 30 / (4 * math.PI * math.pow(manager.InteractionRadius, 3)) * math.pow(lengthScale, 3);
 
     public float GetGravity()
     {
-        return manager.settings.gravity / GravityScale;
+        return manager.settings.gravity / gravityScale;
     }
 
     public void SetGravity(float gravity)
     {
         ThrowIfRunning();
-        manager.settings.gravity = gravity * GravityScale;
+        manager.settings.gravity = gravity * gravityScale;
     }
 
     public float GetDensity()
     {
-        return manager.settings.restDensity / DensityScale;
+        return manager.settings.restDensity / densityScale;
     }
 
     public void SetDensity(float density)
     {
         ThrowIfRunning();
-        manager.settings.restDensity = density * DensityScale;
+        manager.settings.restDensity = density * densityScale;
     }
 
     public float GetViscosity()
     {
-        return manager.settings.lowViscosity / ViscosityScale;
+        return manager.settings.lowViscosity / viscosityScale;
     }
 
     public void SetViscosity(float viscosity)
     {
         ThrowIfRunning();
-        manager.settings.lowViscosity = viscosity * ViscosityScale;
+        manager.settings.lowViscosity = viscosity * viscosityScale;
     }
 
     // Places the body 60% of the tank's largest side in front of the camera, pushed back inside the tank if that spot
@@ -74,7 +72,7 @@ public class SimulationAPI : ISImulationAPI
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The body has to fit inside the tank.");
 
         // The simulation runs in world space, and a body that isn't rotated reaches radius along each axis
-        UnityEngine.Transform camera = UnityEngine.Camera.main.transform;
+        Transform camera = Camera.main.transform;
         float3 position = (float3)camera.position + (float3)camera.forward * (SpawnDistance * math.cmax(tank.size));
         float3 limit = tank.innerHalfSize - radius;
 
@@ -116,7 +114,7 @@ public class SimulationAPI : ISImulationAPI
         if (volume <= 0)
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The volume has to be above 0.");
 
-        return RigidBodies3D.RadiusFromVolume(shape, volume * math.pow(LengthScale, 3));
+        return RigidBodies3D.RadiusFromVolume(shape, volume * math.pow(lengthScale, 3));
     }
 
     private void ThrowIfRunning()

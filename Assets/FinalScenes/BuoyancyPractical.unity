@@ -3203,7 +3203,7 @@ MonoBehaviour:
   particleRenderer: {fileID: 2059809244}
   bodyRenderer: {fileID: 2059809243}
   screenSpaceFluidRenderer: {fileID: 2059809241}
-  fluidRenderMode: 0
+  fluidRenderMode: 1
   drawSolidBodies: 1
   lightDirection: {x: -0.4, y: -1, z: 0.6}
 --- !u!4 &2059809246

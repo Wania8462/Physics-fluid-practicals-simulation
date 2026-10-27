@@ -17,14 +17,7 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private Transform canvas;
     [SerializeField] private GameObject sideMenu;
     [SerializeField] private GameObject windowPrefab;
-    [SerializeField] private SimulationManager sim;
-
-    private ISImulationAPI api;
-
-    private void Awake()
-    {
-        api = new SimulationAPI(sim);
-    }
+    [SerializeField] private SimulationAPI api;
 
     public void OnSideMenuClick()
     {
