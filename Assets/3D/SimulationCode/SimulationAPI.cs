@@ -25,6 +25,12 @@ public class SimulationAPI : MonoBehaviour
 
     // Sim force of 1 N. Accelerations are scaled like gravity, so a body's weight comes out as m g
     public float ForceScale => MassScale * gravityScale;
+
+    public void SetPaused(bool paused)
+    {
+        manager.paused = paused;
+    }
+
     public float GetGravity()
     {
         return manager.settings.gravity / gravityScale;

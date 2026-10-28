@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -44,9 +45,13 @@ public struct Field
 
 public class Window : MonoBehaviour
 {
+    private const float HoverGrowth = 1.05f;
+    private const float DoubleClickTime = 0.3f;
+
+    [SerializeField] private RectTransform top;
     [SerializeField] private RectTransform background;
     [SerializeField] private FieldUI fieldPrefab;
-    [SerializeField] private TMP_Text title;
+    [SerializeField] private TMP_InputField title;
 
     public List<Field> fields = new();
     private readonly List<FieldUI> fieldUIs = new();
@@ -56,21 +61,53 @@ public class Window : MonoBehaviour
     public event Action<int> FieldChanged;
     public event Action Closed;
 
+    // Raised when this window is released over another one
+    public event Action<Window> DroppedOn;
+
     private readonly HashSet<int> changed = new();
     private bool closing;
 
     [SerializeField] private bool topBarHeld;
     private Vector3 mouseOffset;
+    private Window hovered;
+    private bool highlighted;
+    private float lastTopBarClick;
 
     public string Title { set => title.text = value; }
 
+    // The title is an input field styled as plain text, only editable on renamable windows
+    public bool Renamable { set => title.interactable = value; }
+
+    // A group's background holds member windows instead of fields
+    public bool IsGroup { get; private set; }
+
     private void Update()
     {
-        if (Input.GetMouseButtonUp(0))
-            topBarHeld = false;
+        if (!topBarHeld)
+            return;
 
-        if (topBarHeld)
-            OnTopBarHold();
+        transform.position = Input.mousePosition + mouseOffset;
+
+        Window under = TopmostAt(transform.parent, Input.mousePosition, this);
+        if (under != hovered)
+        {
+            if (hovered)
+                hovered.Highlight(false);
+            if (under)
+                under.Highlight(true);
+            hovered = under;
+        }
+
+        if (Input.GetMouseButtonUp(0))
+        {
+            topBarHeld = false;
+            if (hovered)
+            {
+                hovered.Highlight(false);
+                DroppedOn?.Invoke(hovered);
+            }
+            hovered = null;
+        }
     }
 
     private void LateUpdate()
@@ -79,11 +116,102 @@ public class Window : MonoBehaviour
             FieldChanged?.Invoke(index);
         changed.Clear();
 
+        if (IsGroup)
+            LayoutMembers();
+
         if (closing)
         {
-            Closed?.Invoke();
+            RaiseClosed();
             Destroy(gameObject);
         }
+    }
+
+    // The top-level window drawn on top at the point, so a point over a grouped window gives its group
+    public static Window TopmostAt(Transform canvas, Vector2 point, Window except = null)
+    {
+        for (int i = canvas.childCount - 1; i >= 0; i--)
+        {
+            if (canvas.GetChild(i).TryGetComponent(out Window window) && window != except && window.Bounds().Contains(point))
+                return window;
+        }
+        return null;
+    }
+
+    // The whole window, its body only counting when it isn't minimised. World space is screen space on this overlay
+    // canvas
+    private Rect Bounds()
+    {
+        Vector3[] bar = new Vector3[4], body = new Vector3[4];
+        top.GetWorldCorners(bar);
+        (background.gameObject.activeSelf ? background : top).GetWorldCorners(body);
+        return Rect.MinMaxRect(bar[0].x, body[0].y, bar[2].x, bar[1].y);
+    }
+
+    // Shows the dragged window can be dropped onto this one
+    private void Highlight(bool on)
+    {
+        if (on == highlighted)
+            return;
+
+        highlighted = on;
+        transform.localScale *= on ? HoverGrowth : 1 / HoverGrowth;
+    }
+
+    // Makes this window a group. The new member goes below every member whose top bar is above the mouse, so dropping
+    // onto a group also reorders it
+    public void Add(Window window)
+    {
+        int index = background.Cast<Transform>().Count(member => member.position.y > Input.mousePosition.y);
+
+        IsGroup = true;
+        window.transform.SetParent(background, true);
+        window.transform.SetSiblingIndex(index);
+        background.gameObject.SetActive(true);
+    }
+
+    // Stacks the members down the body in sibling order and fits the body around them. Done every frame, so members
+    // being minimised, closed or dragged out are picked up. A group down to one member leaves it in its place, so the
+    // group is shrunk first or the member would keep the hover growth
+    private void LayoutMembers()
+    {
+        if (background.childCount <= 1)
+        {
+            if (background.childCount == 1)
+            {
+                Highlight(false);
+                Transform last = background.GetChild(0);
+                last.SetParent(transform.parent, true);
+                last.SetSiblingIndex(transform.GetSiblingIndex());
+            }
+
+            closing = true;
+            return;
+        }
+
+        Vector3[] corners = new Vector3[4];
+        background.GetWorldCorners(corners);
+        float y = corners[1].y;
+
+        foreach (Transform member in background)
+        {
+            Rect bounds = member.GetComponent<Window>().Bounds();
+            member.position += new Vector3(transform.position.x - member.position.x, y - bounds.yMax, 0);
+            y -= bounds.height;
+        }
+
+        ResizeBackground((corners[1].y - y) / background.lossyScale.y);
+    }
+
+    // Members are destroyed with their group, and are raised from here since a minimised group's members never reach
+    // LateUpdate
+    private void RaiseClosed()
+    {
+        foreach (Transform child in background)
+        {
+            if (child.TryGetComponent(out Window member))
+                member.RaiseClosed();
+        }
+        Closed?.Invoke();
     }
 
     public void UpdateFields()
@@ -126,7 +254,7 @@ public class Window : MonoBehaviour
         SetField(index, field);
     }
 
-    private void ResizeBackground(int totalHeight)
+    private void ResizeBackground(float totalHeight)
     {
         background.pivot = new Vector2(background.pivot.x, 1f);
         background.anchorMin = new Vector2(background.anchorMin.x, 1f);
@@ -146,15 +274,20 @@ public class Window : MonoBehaviour
         background.gameObject.SetActive(!background.gameObject.activeSelf);
     }
 
+    // Dragging a member pulls it out of its group, next to the outermost group. The top bar covers the title, so a
+    // double click on it starts renaming
     public void OnTopBarClick()
     {
+        Window outermost = GetComponentsInParent<Window>().Last();
+        if (outermost != this)
+            transform.SetParent(outermost.transform.parent, true);
+
+        if (Time.unscaledTime - lastTopBarClick < DoubleClickTime)
+            title.Select();
+        lastTopBarClick = Time.unscaledTime;
+
         topBarHeld = true;
         Vector3 mousePos = Input.mousePosition;
         mouseOffset = transform.position - mousePos;
-    }
-
-    private void OnTopBarHold()
-    {
-        transform.position = Input.mousePosition + mouseOffset;
     }
 }

@@ -16,17 +16,37 @@ public class WindowManager : MonoBehaviour
 
     [SerializeField] private Transform canvas;
     [SerializeField] private GameObject sideMenu;
+    [SerializeField] private GameObject settingsCard;
     [SerializeField] private GameObject windowPrefab;
     [SerializeField] private SimulationAPI api;
     [SerializeField] private RenderAPI renderApi;
+
+    // Like an OS window manager, a clicked window comes to the front. Checked here rather than through UI events, so
+    // clicks the fields swallow still count
+    private void Update()
+    {
+        if (!Input.GetMouseButtonDown(0))
+            return;
+
+        Window window = Window.TopmostAt(canvas, Input.mousePosition);
+        if (window)
+            window.transform.SetAsLastSibling();
+    }
 
     public void OnSideMenuClick()
     {
         sideMenu.SetActive(!sideMenu.activeSelf);
     }
 
+    // The simulation is stopped while the card is open
+    public void OnSettingsClick()
+    {
+        settingsCard.SetActive(!settingsCard.activeSelf);
+        api.SetPaused(settingsCard.activeSelf);
+    }
+
     // Spawns a body and ties the window to it. The material fixes the density, so a new mass changes the volume and
-    // anything else changes the mass
+    // anything else changes the mass. The user can rename it, which only changes the title
     public void CreateObjectWindow()
     {
         const int Mass = 0, Volume = 1, Density = 2, Shape = 3;
@@ -44,6 +64,7 @@ public class WindowManager : MonoBehaviour
         // Before the window, so a full simulation leaves no window without a body
         int id = api.AddBody((BodyShape3D)fields[Shape].selected, fields[Volume].value / 1000, fields[Mass].value);
         Window window = CreateWindow("New object", fields);
+        window.Renamable = true;
 
         window.FieldChanged += index =>
         {
@@ -135,6 +156,21 @@ public class WindowManager : MonoBehaviour
         window.Title = title;
         window.fields.AddRange(fields);
         window.UpdateFields();
+        window.DroppedOn += target => Combine(window, target);
         return window;
+    }
+
+    // Dropping onto a lone window starts a group in its place, dropping onto a group joins it
+    private void Combine(Window dragged, Window target)
+    {
+        if (!target.IsGroup)
+        {
+            Window group = CreateWindow("Objects");
+            group.transform.position = target.transform.position;
+            group.Add(target);
+            target = group;
+        }
+
+        target.Add(dragged);
     }
 }

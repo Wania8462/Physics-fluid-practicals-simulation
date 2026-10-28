@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using TMPro;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 [Serializable]
 public struct SimulationSettings3D
@@ -32,7 +34,7 @@ public struct SimulationSettings3D
 public class SimulationManager : MonoBehaviour
 {
     [Header("Simulation settings")]
-    [SerializeField] private bool paused;
+    [SerializeField] internal bool paused;
     [SerializeField] internal SimulationSettings3D settings;
     [SerializeField] public float particleRadius = 0.5f;
     [SerializeField] private int targetFrameRate = 120;
@@ -76,9 +78,18 @@ public class SimulationManager : MonoBehaviour
         Setup();
     }
 
+    // Keys typed into a text box, such as a window being renamed, aren't hotkeys
+    private static bool Typing()
+    {
+        GameObject selected = EventSystem.current ? EventSystem.current.currentSelectedGameObject : null;
+        return selected && selected.TryGetComponent(out TMP_InputField input) && input.isFocused;
+    }
+
     private void Update()
     {
-        if (Input.GetKeyDown(KeyCode.R))
+        bool hotkeys = !Typing();
+
+        if (hotkeys && Input.GetKeyDown(KeyCode.R))
             Setup();
 
         // Draws queued before AddBody or RemoveBody may use the buffers they replaced until that frame has rendered, so
@@ -92,13 +103,13 @@ public class SimulationManager : MonoBehaviour
             BuffersChanged?.Invoke(this);
         }
 
-        if (Input.GetKeyDown(KeyCode.Space))
+        if (hotkeys && Input.GetKeyDown(KeyCode.Space))
             paused = !paused;
 
-        if (!paused || Input.GetKeyDown(KeyCode.RightArrow))
+        if (!paused || hotkeys && Input.GetKeyDown(KeyCode.RightArrow))
             ExecuteStep();
 
-        else if (Input.GetKeyDown(KeyCode.PageDown))
+        else if (hotkeys && Input.GetKeyDown(KeyCode.PageDown))
         {
             for (int i = 0; i < 10; i++)
                 ExecuteStep();

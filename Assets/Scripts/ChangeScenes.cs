@@ -20,6 +20,6 @@ public class ChangeScenes : MonoBehaviour
     
     public void MainMenu()
     {
-        SceneManager.LoadScene("SettingsScene");
+        SceneManager.LoadScene("MainMenu");
     }
 }
