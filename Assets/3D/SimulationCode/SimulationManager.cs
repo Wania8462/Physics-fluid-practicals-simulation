@@ -47,6 +47,8 @@ public class SimulationManager : MonoBehaviour
     [SerializeField] private int targetFrameRate = 120;
     [SerializeField] private bool useRealDeltaTime;
     [SerializeField] private float fakeFramerate = 120;
+    [Tooltip("Seconds the drawn body forces take to ease about two thirds of the way to a new value. 0 draws them raw")]
+    [SerializeField] private float forceSmoothingTime = 0.25f;
 
     [Header("References")]
     [SerializeField] private ComputeShader compute;
@@ -205,6 +207,10 @@ public class SimulationManager : MonoBehaviour
             DispatchPerBody("BodyCalculateVelocity");
             compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
             compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
+
+            // Exponential, so the easing takes the same time whatever dt is
+            compute.SetFloat("forceSmoothing", 1 - Mathf.Exp(-dt / forceSmoothingTime));
+            DispatchPerBody("SmoothBodyForces");
         }
 
         compute.Dispatch(KernelIDs["ResolveBoundaries"], threadGroups);

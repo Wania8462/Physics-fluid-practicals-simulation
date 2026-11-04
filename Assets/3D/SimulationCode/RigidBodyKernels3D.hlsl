@@ -576,6 +576,19 @@ void BodyCalculateVelocity (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
+// Eases the drawn forces towards the last step's, so the arrows and values don't jitter with the solver
+[numthreads(1,1,1)]
+void SmoothBodyForces (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numBodies) return;
+
+    for (uint f = 0; f < BodyForceCount; f++)
+    {
+        uint i = id.x * BodyForceCount + f;
+        SmoothedBodyForces[i] = lerp(SmoothedBodyForces[i], BodyForces[i], forceSmoothing);
+    }
+}
+
 // ---------- Fluid against bodies ----------
 
 // Hard collision of fluid particles with every body: a particle closer than particleRadius to a surface is pushed

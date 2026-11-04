@@ -34,6 +34,7 @@ Shader "Custom/ForceArrow3D"
             StructuredBuffer<float4> BodyForces;
             uint shownForces;       // Bit i is set when BodyForce i is drawn
             float arrowScale;       // Arrow length per sim unit of force
+            float maxArrowLength;   // Longer arrows are cut to this, so they stay on screen
             float width;            // Head radius, the shaft is half as wide
             float headLength;
             float4 colors[ArrowsPerBody];
@@ -57,7 +58,7 @@ Shader "Custom/ForceArrow3D"
 
                 // Hidden arrows and zero forces get zero size, so all their vertices meet at one point and nothing is rasterised
                 float magnitude = length(force);
-                float arrowLength = magnitude * arrowScale * ((shownForces >> arrow) & 1);
+                float arrowLength = min(magnitude * arrowScale, maxArrowLength) * ((shownForces >> arrow) & 1);
 
                 // An arrow shorter than its head is all head, scaled down so it keeps its shape
                 float head = min(headLength, arrowLength);

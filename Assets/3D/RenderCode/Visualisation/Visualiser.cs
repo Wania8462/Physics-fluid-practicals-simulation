@@ -35,6 +35,8 @@ public class Visualiser : MonoBehaviour
     // scale if the practicals need both at once
     [Tooltip("Arrow length per unit of sim force. A 2 L block of wood is 25 units wide and weighs about 10000")]
     [SerializeField] internal float arrowScale = 0.002f;
+    [Tooltip("Arrows of bigger forces are drawn as long as one of this many newtons, so they stay on screen. The value still reads the real force")]
+    [SerializeField] private float maxArrowNewtons = 50;
     [Tooltip("Head radius in sim units, the shaft is half as wide")]
     [SerializeField] private float width = 1.5f;
     [SerializeField] private float headLength = 5;
@@ -79,6 +81,7 @@ public class Visualiser : MonoBehaviour
     private readonly List<(RectTransform box, TMP_Text text)> labels = new();
 
     private Color[] Colors => new[] { gravityColor, contactColor, buoyancyColor, resultantColor };
+    private float MaxArrowLength => maxArrowNewtons * forcePerNewton * arrowScale;
 
     public void Setup(SimulationManager sim)
     {
@@ -93,10 +96,11 @@ public class Visualiser : MonoBehaviour
 
         rp = ComputeHelper.CreateRenderParams(material);
         rp.matProps.SetBuffer("BodyStates", sim.Buffers["BodyStates"]);
-        rp.matProps.SetBuffer("BodyForces", sim.Buffers["BodyForces"]);
+        // Smoothed, so the arrows and values don't jitter
+        rp.matProps.SetBuffer("BodyForces", sim.Buffers["SmoothedBodyForces"]);
 
         statesBuffer = sim.Buffers["BodyStates"];
-        forcesBuffer = sim.Buffers["BodyForces"];
+        forcesBuffer = sim.Buffers["SmoothedBodyForces"];
     }
 
     // Settings are set every frame so inspector changes show while playing. The light direction is a global set by RenderManager
@@ -112,6 +116,7 @@ public class Visualiser : MonoBehaviour
 
         rp.matProps.SetInteger("shownForces", shownForces);
         rp.matProps.SetFloat("arrowScale", arrowScale);
+        rp.matProps.SetFloat("maxArrowLength", MaxArrowLength);
         rp.matProps.SetFloat("width", width);
         rp.matProps.SetFloat("headLength", headLength);
         rp.matProps.SetVectorArray("colors", Array.ConvertAll(Colors, color => (Vector4)color));
@@ -165,7 +170,7 @@ public class Visualiser : MonoBehaviour
                     // The placeholder body of an empty buffer has no forces
                     if (!shown[arrow] || force == Vector3.zero) continue;
 
-                    Vector3 middle = (Vector3)states[body].position.xyz + force * arrowScale / 2;
+                    Vector3 middle = (Vector3)states[body].position.xyz + Vector3.ClampMagnitude(force * arrowScale, MaxArrowLength) / 2;
                     PlaceLabel(ref used, middle, $"{force.magnitude / forcePerNewton:0.0} N", colors[arrow]);
                 }
             }

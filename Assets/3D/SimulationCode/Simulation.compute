@@ -29,6 +29,7 @@
 #pragma kernel SumContacts
 #pragma kernel ApplyContacts
 #pragma kernel BodyCalculateVelocity
+#pragma kernel SmoothBodyForces
 #pragma kernel ResolveBodyCollisions
 
 #include "FluidMath3D.hlsl"
@@ -81,8 +82,10 @@ RWStructuredBuffer<float4> BodyCouplingSums;
 RWStructuredBuffer<float4> BodyContactSums;
 
 // The last step's forces on each body, BodyForceCount per body, in sim mass times sim length per second squared.
-// Only written, for the Visualiser to draw
+// The physics only writes it, for SmoothBodyForces to ease into SmoothedBodyForces
 RWStructuredBuffer<float4> BodyForces;
+// BodyForces eased over a few steps, which is what the Visualiser draws
+RWStructuredBuffer<float4> SmoothedBodyForces;
 
 // The last step's push of each scale on each body, MaxScales per body, in the same units as BodyForces. The CPU adds
 // them up per scale for its reading
@@ -146,6 +149,8 @@ const uint numBoundaryParticles;
 const uint numBodies;
 const float boundaryFriction;
 const float bodyFriction;
+// Share of the last step's forces blended into SmoothedBodyForces per step
+const float forceSmoothing;
 
 void SetForceBuffer(uint index, float4 value)
 {
