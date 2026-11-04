@@ -14,14 +14,14 @@ public class SimulationAPI : MonoBehaviour
     // its own, so together they aren't a consistent unit system. Calibrate them against what the practicals should show
     [Header("Unit scales")]
     [SerializeField] private float lengthScale = 200;           // Sim units per metre, the 250 unit tank is 1.25 m wide
-    [SerializeField] private float densityScale = 5f / 1000;    // restDensity per kg/m³, 5 is water
+    [SerializeField] private float densityScale = 1f / 1000;    // restDensity (sim mass per sim unit³) per kg/m³, 1 is water
     [SerializeField] private float gravityScale = 20 / 9.81f;   // Sim gravity per m/s², -20 is Earth
     [SerializeField] private float viscosityScale = 1;          // lowViscosity per mPa·s, 1 is water
 
-    // Sim mass of 1 kg. Fluid particles weigh 1 and, for the (1 - q)² density kernel, rest at restDensity * 30 / (4π h³)
-    // to a sim unit³, so a body as dense as the fluid weighs as much as the particles it displaces. Ignores near pressure
-    // and compression, so an ice cube floating about 90% under is the check
-    private float MassScale => densityScale * 30 / (4 * math.PI * math.pow(manager.InteractionRadius, 3)) * math.pow(lengthScale, 3);
+    // Sim mass of 1 kg. restDensity is sim mass per sim unit³ and each fluid particle weighs restDensity * spacing³, so a
+    // body as dense as the fluid weighs as much as the particles it displaces. An ice cube floating about 92% under is
+    // the check
+    private float MassScale => densityScale * math.pow(lengthScale, 3);
 
     // Sim force of 1 N. Accelerations are scaled like gravity, so a body's weight comes out as m g
     public float ForceScale => MassScale * gravityScale;

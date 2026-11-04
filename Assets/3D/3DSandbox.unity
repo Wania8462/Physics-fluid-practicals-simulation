@@ -386,9 +386,10 @@ MonoBehaviour:
     mouseAttractiveness: 1
     mouseRadius: 100
     collisionDamping: 0.083
-    stiffness: 200
-    nearStiffness: 20
-    restDensity: 5
+    solverIterations: 4
+    relaxation: 0.04
+    artificialPressure: 0.1
+    restDensity: 1
     highViscosity: 0
     lowViscosity: 1
     boundaryFriction: 1

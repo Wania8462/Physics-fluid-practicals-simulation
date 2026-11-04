@@ -34,10 +34,11 @@ float3 ReadBoundaryForceBuffer(uint index)
                   (float)BoundaryForceBuffersZ[index]) / FloatScale;
 }
 
-// ---------- Fluid-body coupling, called from DoubleDensityRelaxation and ApplyViscosity ----------
+// ---------- Fluid-body coupling, called from CalculateLambdas, CalculateDeltaPositions and ApplyViscosity ----------
 
-// Density the boundary particles add to a fluid particle, each weighted by psi = restDensity * volume (port of 2D)
-void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float nearDensity)
+// Density and constraint gradient the boundary particles add to a fluid particle, each standing for its volume of
+// fluid (Akinci et al. 2012)
+void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient)
 {
     for (uint i = 0; i < 27; i++)
     {
@@ -49,27 +50,26 @@ void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density
         for (uint j = BoundaryCellStartRO[cell]; j < BoundaryCellStartRO[cell + 1]; j++)
         {
             uint boundary = BoundarySortedIndicesRO[j];
-            float magSq = DistanceSq(position, BoundaryPositionsRO[boundary]);
-            float q = sqrt(magSq) / interactionRadius;
+            float4 boundaryPosition = BoundaryPositionsRO[boundary];
+            float magSq = DistanceSq(position, boundaryPosition);
+            float mag = sqrt(magSq);
 
             // Branchless mask: 0 when the particles coincide or are out of range
-            float w = step(1e-12, magSq) * step(q, 1.0);
-            float psi = restDensity * BoundaryVolumesRO[boundary];
+            float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
+            float volume = BoundaryVolumesRO[boundary];
+            float4 r = (boundaryPosition - position) / max(mag, 1e-9);
 
-            density += w * psi * QuadraticSpikyKernel(q);
-            nearDensity += w * psi * CubicSpikyKernel(q);
+            density += w * volume * Poly6(magSq, interactionRadiusSq, poly6Factor);
+            gradient += w * volume * SpikyGradient(mag, interactionRadius, spikyGradFactor, r);
         }
     }
 }
 
-// Boundary pressure pushes the fluid particle away and stores the reaction on the boundary particle, which
-// SumCouplingForces turns into force and torque on its body (port of 2D). Pressure is clamped at 0 so bodies
-// never pull fluid in
-void ApplyBoundaryPressure(uint index, float4 position, uint3 cellPosition, float pressure, float nearPressure)
+// The boundary part of a fluid particle's correction pushes it away, and the opposite is stored on the boundary
+// particle, which SumCouplingForces turns into force and torque on its body. lambda is never above 0, so bodies never
+// pull fluid in
+void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta)
 {
-    float boundaryPressure = max(pressure, 0.0);
-    float boundaryNearPressure = max(nearPressure, 0.0);
-
     for (uint i = 0; i < 27; i++)
     {
         int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
@@ -83,16 +83,15 @@ void ApplyBoundaryPressure(uint index, float4 position, uint3 cellPosition, floa
             float4 boundaryPosition = BoundaryPositionsRO[boundary];
             float magSq = DistanceSq(position, boundaryPosition);
             float mag = sqrt(magSq);
-            float q = mag / interactionRadius;
 
             // Branchless mask: 0 when the particles coincide or are out of range
-            float w = step(1e-12, magSq) * step(q, 1.0);
+            float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
             float4 r = (boundaryPosition - position) / max(mag, 1e-9);
-            float4 displacement = w * restDensity * BoundaryVolumesRO[boundary] *
-                PressureDisplacement(dt, q, boundaryPressure, boundaryNearPressure, r);
+            float4 correction = w * lambda * BoundaryVolumesRO[boundary] *
+                SpikyGradient(mag, interactionRadius, spikyGradFactor, r);
 
-            AtomicAddForceBuffer(index, -displacement);
-            AtomicAddBoundaryForceBuffer(boundary, displacement);
+            delta += correction;
+            AtomicAddBoundaryForceBuffer(boundary, -correction);
         }
     }
 }
@@ -183,8 +182,8 @@ void ScatterBoundary (uint3 id : SV_DispatchThreadID)
 
 // ---------- Boundary particles ----------
 
-// One-time volumes, V = 1 / sum of W over the boundary neighbours (port of 2D). Neighbours from other bodies
-// are masked out, so a volume doesn't depend on where the bodies start
+// One-time volumes, V = 1 / sum of W over the boundary neighbours and the particle itself (Akinci et al. 2012).
+// Neighbours from other bodies are masked out, so a volume doesn't depend on where the bodies start
 [numthreads(64,1,1)]
 void CalculateBoundaryVolumes (uint3 id : SV_DispatchThreadID)
 {
@@ -206,11 +205,10 @@ void CalculateBoundaryVolumes (uint3 id : SV_DispatchThreadID)
         {
             uint neighbour = BoundarySortedIndices[j];
             float magSq = DistanceSq(position, BoundaryPositions[neighbour]);
-            float q = sqrt(magSq) / interactionRadius;
 
-            // Branchless mask: 0 when the particles coincide, are out of range or belong to different bodies
-            float w = step(1e-12, magSq) * step(q, 1.0) * (BoundaryBodyIndices[neighbour] == body);
-            delta += w * QuadraticSpikyKernel(q);
+            // Poly6 is 0 out of range. Branchless mask: 0 for neighbours from other bodies
+            float w = BoundaryBodyIndices[neighbour] == body;
+            delta += w * Poly6(magSq, interactionRadiusSq, poly6Factor);
         }
     }
 
@@ -248,11 +246,14 @@ bool IsStatic(uint body)
     return BodyProperties[body].invMass == 0;
 }
 
-// Gravity and predicted state, the body counterpart of ExternalForces and AdvancePredictedPositions
+// Gravity and predicted state, the body counterpart of ExternalForces and AdvancePredictedPositions. Also clears the
+// buoyancy readout, which ApplyCouplingForces adds up over the solver iterations
 [numthreads(1,1,1)]
 void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numBodies) return;
+
+    BodyForces[id.x * BodyForceCount + ForceBuoyancy] = 0;
 
     if (IsStatic(id.x))
     {
@@ -297,17 +298,15 @@ void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThr
     BodyCouplingSums[slot + 1] = float4(torque, 0);
 }
 
-// Moves each body by the fluid's push: position by F / M, rotation by the inverse inertia times the torque
+// Moves each body by the fluid's push, once per solver iteration. The boundary particles hold the opposite of the
+// fluid's corrections, so momentum is kept when they are weighted by particleMass: position by m / M times the push,
+// rotation by the inverse inertia times the torque.
+// ponytail: the fluid treats the bodies as fixed within an iteration and they catch up after it, so light bodies may
+// jitter. Adding each body's generalised inverse mass to the lambda denominator would solve them together
 [numthreads(1,1,1)]
 void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= numBodies) return;
-
-    if (IsStatic(id.x))
-    {
-        BodyForces[id.x * BodyForceCount + ForceBuoyancy] = 0;
-        return;
-    }
+    if (id.x >= numBodies || IsStatic(id.x)) return;
 
     RigidBodyProperties properties = BodyProperties[id.x];
     RigidBodyState state = BodyStates[id.x];
@@ -321,8 +320,11 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
         torque += BodyCouplingSums[slot + 1].xyz;
     }
 
+    force *= particleMass;
+    torque *= particleMass;
+
     // The push moves the position alone, so it all becomes velocity: dv = invMass * force / dt, and F = M dv / dt
-    BodyForces[id.x * BodyForceCount + ForceBuoyancy] = float4(force / (dt * dt), 0);
+    BodyForces[id.x * BodyForceCount + ForceBuoyancy] += float4(force / (dt * dt), 0);
 
     float3x3 invInertiaWorld = InverseInertiaWorld(state.rotation, properties.invInertia.xyz);
     state.position.xyz += properties.invMass * force;
@@ -347,11 +349,13 @@ void AttractBodiesToMouse (uint3 id : SV_DispatchThreadID)
 
 // ---------- Contacts with the walls and other bodies ----------
 
-// How far a position has to move to get back inside the walls, zero on axes where it is inside (port of 2D)
+// How far a position has to move to get back inside the walls, zero on axes where it is inside (port of 2D). Bodies
+// stop a particle spacing short of the walls, so fluid gets under a body on the floor and pushes it up
 float3 WallPushOut(float3 position)
 {
-    float3 outside = step(realHalfBoundSize.xyz, abs(position));
-    return (sign(position) * realHalfBoundSize.xyz - position) * outside;
+    float3 halfSize = realHalfBoundSize.xyz - restSpacing;
+    float3 outside = step(halfSize, abs(position));
+    return (sign(position) * halfSize - position) * outside;
 }
 
 // One positional contact at offset r from the centre of mass. It adds the push out by depth along normal, the friction
@@ -438,14 +442,17 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
             float3 otherNormal;
             float otherDistance = BodySignedDistance(otherProperties, otherState, contactPosition, otherNormal);
 
+            // Scales keep a particle spacing between their pan and a body, like the walls, so fluid gets under it
+            float isScale = otherProperties.invMass == 0;
+            float contactDistance = particleRadius + isScale * restSpacing;
+
             // Only pushes that move this body away from the other body's centre count. In a deep overlap, particles past
             // the other body's centre are closest to its far side, and pushing them out there pulls the bodies together
             float facing = step(0.0, dot(otherNormal, state.position.xyz - otherState.position.xyz));
-            float inside = step(otherDistance, particleRadius) * facing * (other != body);
+            float inside = step(otherDistance, contactDistance) * facing * (other != body);
             float share = properties.invMass / (properties.invMass + otherProperties.invMass);
-            float3 push = otherNormal * (particleRadius - otherDistance) * inside;
+            float3 push = otherNormal * (contactDistance - otherDistance) * inside;
 
-            float isScale = otherProperties.invMass == 0;
             uint otherScale = (uint)otherProperties.size.w;
             for (uint s = 0; s < MaxScales; s++)
                 scalePushes[s] += push * isScale * (float)(otherScale == s);

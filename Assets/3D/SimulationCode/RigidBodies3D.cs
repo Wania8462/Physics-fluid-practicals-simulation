@@ -267,7 +267,7 @@ public static class RigidBodies3D
     }
 
     // Every buffer gets at least one element so it exists without bodies. BoundaryCellStart always spans the whole
-    // grid because DoubleDensityRelaxation indexes it by cell
+    // grid because the solver kernels index it by cell
     public static void CreateBuffers(Dictionary<string, ComputeBuffer> buffers, RigidBodyData3D data, int numCells)
     {
         int boundaryCount = math.max(data.NumBoundaryParticles, 1);

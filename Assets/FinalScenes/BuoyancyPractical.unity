@@ -7128,9 +7128,10 @@ MonoBehaviour:
     mouseAttractiveness: 0
     mouseRadius: 100
     collisionDamping: 0.083
-    stiffness: 200
-    nearStiffness: 20
-    restDensity: 5
+    solverIterations: 4
+    relaxation: 0.04
+    artificialPressure: 0.1
+    restDensity: 1
     highViscosity: 0
     lowViscosity: 1
     boundaryFriction: 1
@@ -7193,7 +7194,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 3DSimulation::SimulationAPI
   manager: {fileID: 1788287364}
   lengthScale: 200
-  densityScale: 0.005
+  densityScale: 0.001
   gravityScale: 2.0387359
   viscosityScale: 1
 --- !u!1 &1788336793

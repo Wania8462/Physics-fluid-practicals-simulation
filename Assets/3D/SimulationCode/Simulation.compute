@@ -1,7 +1,8 @@
 #pragma kernel ExternalForces
 #pragma kernel ClearForceBuffers
-#pragma kernel DoubleDensityRelaxation
-#pragma kernel ApplyForceBuffers
+#pragma kernel CalculateLambdas
+#pragma kernel CalculateDeltaPositions
+#pragma kernel ApplyDeltaPositions
 #pragma kernel ApplyForceBuffersToVelocities
 #pragma kernel ApplyViscosity
 #pragma kernel ResolveBoundaries
@@ -44,8 +45,11 @@ RWStructuredBuffer<int> ForceBuffersY;
 RWStructuredBuffer<int> ForceBuffersZ;
 RWStructuredBuffer<float4> Velocities;
 
+// PBF solver state. Densities are number densities, 1 at rest. Lambdas are the constraint multipliers, which act as
+// pressure, and DeltaPositions each particle's correction for the current iteration
 RWStructuredBuffer<float> Densities;
-RWStructuredBuffer<float> NearDensities;
+RWStructuredBuffer<float> Lambdas;
+RWStructuredBuffer<float4> DeltaPositions;
 
 // Compact grid: particle indices grouped by cell in one contiguous buffer.
 // Cell c occupies SortedIndices[CellStart[c] .. CellStart[c + 1]).
@@ -89,6 +93,7 @@ RWStructuredBuffer<float4> BodyScaleForces;
 // A kernel must use either the read-write or the read-only name of a buffer, never both
 StructuredBuffer<float4> PositionsRO;
 StructuredBuffer<float4> VelocitiesRO;
+StructuredBuffer<float> LambdasRO;
 StructuredBuffer<uint> CellStartRO;
 StructuredBuffer<uint> SortedIndicesRO;
 StructuredBuffer<float4> BoundaryPositionsRO;
@@ -106,9 +111,15 @@ const float gravity;
 const float mouseAttractiveness;
 const float mouseRadius;
 
-const float stiffness;
-const float nearStiffness;
-const float restDensity;
+// PBF (Macklin & Müller 2013) in number density form: every particle stands for particleVolume of fluid, so the
+// constraint doesn't depend on the fluid's density, only particleMass does
+const float particleVolume;
+const float particleMass;
+const float restSpacing;
+const float relaxation;
+const float artificialPressure;
+const float poly6Factor;
+const float spikyGradFactor;
 
 const float highViscosity;
 const float lowViscosity;
@@ -163,8 +174,8 @@ uint3 GetCellPosition(float4 position);
 uint GetCellIndex(uint3 cellPosition);
 
 // Fluid-body coupling, defined in RigidBodyKernels3D.hlsl
-void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float nearDensity);
-void ApplyBoundaryPressure(uint index, float4 position, uint3 cellPosition, float pressure, float nearPressure);
+void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient);
+void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta);
 void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 cellPosition);
 
 [numthreads(64,1,1)]
@@ -183,8 +194,18 @@ void ClearForceBuffers (uint3 id : SV_DispatchThreadID)
     SetForceBuffer(id.x, ZeroImpulse);
 }
 
+// The walls count as fluid at rest beyond them, so a particle next to one isn't missing half its neighbours.
+// Distances to the walls over the interaction radius, 1 (no effect) past it
+float3 WallDistances(float4 position)
+{
+    return saturate((realHalfBoundSize.xyz - abs(position.xyz)) / interactionRadius);
+}
+
+// The density constraint C = max(density - 1, 0) and its multiplier lambda = -C / (sum of |grad C|² + relaxation).
+// Clamped at 0, so the free surface never pulls. Boundary particles and walls don't move in the solve, so only the
+// particle itself and its fluid neighbours count in the sum
 [numthreads(64,1,1)]
-void DoubleDensityRelaxation (uint3 id : SV_DispatchThreadID)
+void CalculateLambdas (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles) return;
 
@@ -192,7 +213,8 @@ void DoubleDensityRelaxation (uint3 id : SV_DispatchThreadID)
     uint3 cellPosition = GetCellPosition(position);
 
     float density = 0;
-    float nearDensity = 0;
+    float4 gradient = 0;            // Of C with respect to this particle
+    float neighbourGradients = 0;   // Sum of |grad C|² with respect to each neighbour
 
     for (uint i = 0; i < 27; i++)
     {
@@ -203,59 +225,88 @@ void DoubleDensityRelaxation (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            float mag = DistanceSq(position, PositionsRO[SortedIndicesRO[j]]);
-            if (mag == 0 || mag > interactionRadiusSq) continue;
-            mag = sqrt(mag);
+            float4 neighbourPosition = PositionsRO[SortedIndicesRO[j]];
+            float magSq = DistanceSq(position, neighbourPosition);
+            if (magSq >= interactionRadiusSq) continue;
 
-            float q = mag / interactionRadius;
-            density += QuadraticSpikyKernel(q);
-            nearDensity += CubicSpikyKernel(q);
+            // The particle itself counts towards its density
+            density += particleVolume * Poly6(magSq, interactionRadiusSq, poly6Factor);
+            if (magSq == 0) continue;
+
+            float mag = sqrt(magSq);
+            float4 neighbourGradient = particleVolume *
+                SpikyGradient(mag, interactionRadius, spikyGradFactor, UnitVector(position, neighbourPosition, mag));
+
+            gradient += neighbourGradient;
+            neighbourGradients += dot(neighbourGradient, neighbourGradient);
         }
     }
 
     // numBodies is the same for every thread, so this branch costs no divergence
     if (numBodies > 0)
-        AddBoundaryDensity(position, cellPosition, density, nearDensity);
+        AddBoundaryDensity(position, cellPosition, density, gradient);
 
+    float3 wallDistances = WallDistances(position);
+    density += dot(WallDensity(wallDistances), float3(1, 1, 1));
+    gradient.xyz += sign(position.xyz) * WallDensityGradient(wallDistances, interactionRadius);
+
+    float constraint = max(density - 1.0, 0.0);
     Densities[id.x] = density;
-    NearDensities[id.x] = nearDensity;
+    Lambdas[id.x] = -constraint / (dot(gradient, gradient) + neighbourGradients + relaxation);
+}
 
-    float pressure = stiffness * (density - restDensity);
-    float nearPressure = nearStiffness * nearDensity;
+// Each particle's correction from its own and its neighbours' lambdas, gathered so no atomics are needed. The
+// artificial pressure term s_corr keeps particles from clumping where the clamped constraint has no effect
+[numthreads(64,1,1)]
+void CalculateDeltaPositions (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
 
-    for (uint k = 0; k < 27; k++)
+    float4 position = PositionsRO[id.x];
+    float lambda = LambdasRO[id.x];
+    uint3 cellPosition = GetCellPosition(position);
+
+    // s_corr = -k (W(r) / W(0.2 h))^4, as in the paper
+    float sCorrKernel = Poly6(0.04 * interactionRadiusSq, interactionRadiusSq, poly6Factor);
+    float4 delta = 0;
+
+    for (uint i = 0; i < 27; i++)
     {
-        int3 cellOffset = int3(k % 3, (k / 3) % 3, k / 9) - 1;
+        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
         uint3 neighbourPos = cellPosition + cellOffset;
         if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
         uint cell = GetCellIndex(neighbourPos);
 
-        for (uint l = CellStartRO[cell]; l < CellStartRO[cell + 1]; l++)
+        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            uint neighbour = SortedIndicesRO[l];
-            float mag = DistanceSq(position, PositionsRO[neighbour]);
-            if (mag == 0 || mag > interactionRadiusSq) continue;
-            mag = sqrt(mag);
+            uint neighbour = SortedIndicesRO[j];
+            float4 neighbourPosition = PositionsRO[neighbour];
+            float magSq = DistanceSq(position, neighbourPosition);
+            if (magSq == 0 || magSq >= interactionRadiusSq) continue;
 
-            float q = mag / interactionRadius;
-            float4 r = UnitVector(position, PositionsRO[neighbour], mag);
-            float4 displacement = PressureDisplacement(dt, q, pressure, nearPressure, r) * 0.5f;
+            float mag = sqrt(magSq);
+            float ratio = Poly6(magSq, interactionRadiusSq, poly6Factor) / sCorrKernel;
+            float sCorr = -artificialPressure * ratio * ratio * ratio * ratio;
 
-            AtomicAddForceBuffer(neighbour, displacement);
-            AtomicAddForceBuffer(id.x, -displacement);
+            delta += particleVolume * (lambda + LambdasRO[neighbour] + sCorr) *
+                SpikyGradient(mag, interactionRadius, spikyGradFactor, UnitVector(position, neighbourPosition, mag));
         }
     }
 
     if (numBodies > 0)
-        ApplyBoundaryPressure(id.x, position, cellPosition, pressure, nearPressure);
+        AddBoundaryCorrection(position, cellPosition, lambda, delta);
+
+    delta.xyz += lambda * sign(position.xyz) * WallDensityGradient(WallDistances(position), interactionRadius);
+
+    DeltaPositions[id.x] = delta;
 }
 
 [numthreads(64,1,1)]
-void ApplyForceBuffers (uint3 id : SV_DispatchThreadID)
+void ApplyDeltaPositions (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles) return;
 
-    Positions[id.x] += ReadForceBuffer(id.x);
+    Positions[id.x] += DeltaPositions[id.x];
 }
 
 [numthreads(64,1,1)]

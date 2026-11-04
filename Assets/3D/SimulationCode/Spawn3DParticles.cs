@@ -31,6 +31,9 @@ public class Spawn3DParticles : MonoBehaviour
     [Tooltip("Space between the particle cube and each tank wall")]
     [SerializeField, FormerlySerializedAs("boundingBoxSizeOffset")] private float3 tankPadding = new(40, 40, 40);
 
+    // The solver rests the fluid at this spacing
+    public float Spacing => spacing;
+
     public int GetNumberOfParticles() => particleCubeLength * particleCubeLength * particleCubeLength;
 
     public float4[] InitializePositions()
