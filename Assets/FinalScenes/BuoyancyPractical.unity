@@ -7141,6 +7141,7 @@ MonoBehaviour:
   targetFrameRate: 120
   useRealDeltaTime: 0
   fakeFramerate: 120
+  forceSmoothingTime: 0.25
   compute: {fileID: 7200000, guid: b5e4a0cf884ba434689f3c17b13c18b3, type: 3}
   spawn: {fileID: 1788287365}
   numParticles: 0
@@ -7157,14 +7158,21 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 8f527c525dced3042bcc20fc8798b247, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Spawn3DParticles
-  particleCubeLength: 50
+  center:
+    x: 0
+    y: 0
+    z: 0
+  particleBoxSize:
+    x: 150
+    y: 150
+    z: 150
   spacing: 3
   useJitter: 1
-  jitterStrength: 0.2
+  jitterStrength: 0.5
   tankPadding:
-    x: 50
-    y: 50
-    z: 50
+    x: 20
+    y: 20
+    z: 20
 --- !u!4 &1788287366
 Transform:
   m_ObjectHideFlags: 0
@@ -8414,6 +8422,7 @@ MonoBehaviour:
   material: {fileID: 2100000, guid: 65598fc2714b91b4b80a09eff2c971f6, type: 2}
   valueParent: {fileID: 860799396}
   arrowScale: 0.005
+  maxArrowNewtons: 50
   width: 1.5
   headLength: 5
   gravityColor: {r: 1, g: 0, b: 0, a: 1}

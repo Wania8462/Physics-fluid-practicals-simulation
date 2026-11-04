@@ -288,6 +288,7 @@ public class SimulationManager : MonoBehaviour
         // get shot out on the first step and kick the body the other way
         float4[] positions = RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f);
         numParticles = positions.Length;
+        Debug.Log($"Simulation manager: {numParticles} particles");
 
         CreateBuffers(positions);
 

@@ -24,41 +24,60 @@ public readonly struct Tank
 public class Spawn3DParticles : MonoBehaviour
 {
     [Header("Spawn settings")]
-    [SerializeField] private int particleCubeLength = 20;
+    [Tooltip("Centre of the particle box")]
+    [SerializeField] private float3 center;
+    [Tooltip("Size of the box filled with particles, one per spacing³ cell")]
+    [SerializeField] private float3 particleBoxSize = new(40, 40, 40);
     [SerializeField] private float spacing = 2;
     [SerializeField] private bool useJitter = true;
     [SerializeField] private float jitterStrength = 0.2f;
-    [Tooltip("Space between the particle cube and each tank wall")]
+    [Tooltip("Space between the particle box and each tank wall")]
     [SerializeField, FormerlySerializedAs("boundingBoxSizeOffset")] private float3 tankPadding = new(40, 40, 40);
 
     // The solver rests the fluid at this spacing
     public float Spacing => spacing;
 
-    public int GetNumberOfParticles() => particleCubeLength * particleCubeLength * particleCubeLength;
+    private int3 ParticlesPerAxis => math.max(1, (int3)math.floor(particleBoxSize / spacing));
+
+    public int GetNumberOfParticles() => ParticlesPerAxis.x * ParticlesPerAxis.y * ParticlesPerAxis.z;
 
     public float4[] InitializePositions()
     {
-        int len = particleCubeLength;
-        float4[] pos = new float4[len * len * len];
-        float jitter = useJitter ? jitterStrength : 0;
+        // The tank is centred on the origin and reaches tankPadding past the box, so a centre further out than that
+        // pokes the box through a wall
+        if (math.any(math.abs(center) > tankPadding))
+            Debug.LogWarning($"Spawn particles: the particle box at {center} sticks out of the tank");
 
-        for (int i = 0; i < len; i++)
+        int3 n = ParticlesPerAxis;
+        float4[] pos = new float4[n.x * n.y * n.z];
+        float jitter = useJitter ? jitterStrength : 0;
+        // Centre of the first cell, so the lattice sits centred on center
+        float3 start = center - (float3)(n - 1) * spacing / 2;
+
+        for (int i = 0; i < n.x; i++)
         {
-            for (int j = 0; j < len; j++)
+            for (int j = 0; j < n.y; j++)
             {
-                for (int k = 0; k < len; k++)
+                for (int k = 0; k < n.z; k++)
                 {
-                    Vector3 jitterOffset = UnityEngine.Random.insideUnitSphere * jitter;
-                    pos[(i * len + j) * len + k] = new float4(i * spacing + jitterOffset.x - len + 1,
-                                                              j * spacing + jitterOffset.y - len + 1,
-                                                              k * spacing + jitterOffset.z - len + 1,
-                                                              0);
+                    float3 jitterOffset = UnityEngine.Random.insideUnitSphere * jitter;
+                    pos[(i * n.y + j) * n.z + k] = new float4(start + new float3(i, j, k) * spacing + jitterOffset, 0);
                 }
             }
         }
 
         return pos;
     }
+
+    private void OnDrawGizmos()
+    {
+        Gizmos.color = Color.cyan;
+        Gizmos.DrawWireCube(center, particleBoxSize);
+        Gizmos.color = Color.white;
+        Gizmos.DrawWireCube(Vector3.zero, TankSize);
+    }
+
+    private float3 TankSize => particleBoxSize + tankPadding * 2;
 
     // Boundary particles on the surface of a cube centred on the origin: the points of a lattice spaced about
     // sampleDensity apart that lie on a face. 3D counterpart of the 2D InitRectangleOutlinePositions
@@ -160,7 +179,7 @@ public class Spawn3DParticles : MonoBehaviour
 
     public Tank GetTank(float particleRadius)
     {
-        float3 size = new float3(particleCubeLength) + tankPadding * 2;
+        float3 size = TankSize;
 
         if (math.any(size <= 0))
             Debug.LogWarning($"Spawn particles: tank size is {size}");
