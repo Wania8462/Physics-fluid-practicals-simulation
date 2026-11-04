@@ -42,6 +42,19 @@ public class RenderAPI : MonoBehaviour
         visualiser.showValues = draw;
     }
 
+    // Writes the text on the sides of the scale, and in its label when that is shown. The renderer places both where the
+    // scale is. Null draws nothing for the scale
+    public void SetScaleText(int scale, string text)
+    {
+        visualiser.scaleTexts[scale] = text;
+    }
+
+    // Shows the scale's text as a label over its pan, like the force values
+    public void ShowScaleLabel(int scale, bool show)
+    {
+        visualiser.scaleLabelsShown[scale] = show;
+    }
+
     // The sim force of 1 N, SimulationAPI.ForceScale, so the values read in newtons
     public void SetNewtonScale(float forcePerNewton)
     {

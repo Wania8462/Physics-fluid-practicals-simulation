@@ -4,10 +4,12 @@
 // A reduction slot of SumCouplingForces holds a force and a torque
 #define CouplingSlotSize 2
 
-// SumContacts groups contacts per wall axis (x, y, z) plus one group for all other bodies. For each group a
-// reduction slot holds the push out (w = number of contacts), the friction, the torque and the approach
-#define ContactGroups 4
-#define ContactSlotSize 16
+// SumContacts groups contacts per wall axis (x, y, z), one group for all other moving bodies, then one per scale, so a
+// scale's push can be told apart. For each group a reduction slot holds the push out (w = number of contacts), the
+// friction, the torque and the approach
+#define ScaleContactGroup 4
+#define ContactGroups (ScaleContactGroup + MaxScales)
+#define ContactSlotSize (ContactGroups * 4)
 
 // ---------- Boundary force buffers: atomic fixed-point accumulators, like the fluid ones ----------
 
@@ -239,11 +241,24 @@ void PlaceBoundaryParticles (uint3 id : SV_DispatchThreadID)
 
 // ---------- Body integration: one thread group per body ----------
 
+// Static bodies (scales) have no inverse mass. Nothing on the GPU moves them and they have no forces, only the CPU
+// places them
+bool IsStatic(uint body)
+{
+    return BodyProperties[body].invMass == 0;
+}
+
 // Gravity and predicted state, the body counterpart of ExternalForces and AdvancePredictedPositions
 [numthreads(1,1,1)]
 void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numBodies) return;
+
+    if (IsStatic(id.x))
+    {
+        BodyForces[id.x * BodyForceCount + ForceGravity] = 0;
+        return;
+    }
 
     RigidBodyState state = BodyStates[id.x];
 
@@ -263,7 +278,7 @@ void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
 void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
     uint body = groupId.x;
-    if (body >= numBodies) return;
+    if (body >= numBodies || IsStatic(body)) return;
 
     RigidBodyProperties properties = BodyProperties[body];
     float3 centerOfMass = BodyStates[body].position.xyz;
@@ -288,6 +303,12 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numBodies) return;
 
+    if (IsStatic(id.x))
+    {
+        BodyForces[id.x * BodyForceCount + ForceBuoyancy] = 0;
+        return;
+    }
+
     RigidBodyProperties properties = BodyProperties[id.x];
     RigidBodyState state = BodyStates[id.x];
 
@@ -310,11 +331,11 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Right mouse pulls bodies, the body counterpart of AttractToMouse
+// Right mouse pulls bodies, the body counterpart of AttractToMouse. Scales are dragged by the CPU instead
 [numthreads(1,1,1)]
 void AttractBodiesToMouse (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= numBodies) return;
+    if (id.x >= numBodies || IsStatic(id.x)) return;
 
     RigidBodyState state = BodyStates[id.x];
     float mag = Distance(state.position, mousePosition);
@@ -363,7 +384,7 @@ void AccumulateContact(inout float4 pushSum, inout float4 frictionSum, inout flo
 void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
     uint body = groupId.x;
-    if (body >= numBodies) return;
+    if (body >= numBodies || IsStatic(body)) return;
 
     RigidBodyProperties properties = BodyProperties[body];
     RigidBodyState state = BodyStates[body];
@@ -399,11 +420,16 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
                           r, float3(0, 0, sign(wallPush.z)), abs(wallPush.z), displacement, 1.0);
 
         // Other bodies: push out along their surface normals, keeping the share of the correction the masses give
-        // this body. Friction and the approach use the motion relative to the other body's surface
+        // this body. Friction and the approach use the motion relative to the other body's surface. Moving bodies
+        // share one contact, each scale gets its own. Scales never move, so this body takes their whole correction
         float3 bodyPush = 0;
         float3 otherDisplacement = 0;
         float touching = 0;
         float shareSum = 0;
+        float3 scalePushes[MaxScales];
+        for (uint k = 0; k < MaxScales; k++)
+            scalePushes[k] = 0;
+
         for (uint other = 0; other < numBodies; other++)
         {
             RigidBodyProperties otherProperties = BodyProperties[other];
@@ -417,11 +443,18 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
             float facing = step(0.0, dot(otherNormal, state.position.xyz - otherState.position.xyz));
             float inside = step(otherDistance, particleRadius) * facing * (other != body);
             float share = properties.invMass / (properties.invMass + otherProperties.invMass);
+            float3 push = otherNormal * (particleRadius - otherDistance) * inside;
 
-            bodyPush += otherNormal * (particleRadius - otherDistance) * share * inside;
-            otherDisplacement += BodyPointDisplacement(otherState, contactPosition) * inside;
-            touching += inside;
-            shareSum += share * inside;
+            float isScale = otherProperties.invMass == 0;
+            uint otherScale = (uint)otherProperties.size.w;
+            for (uint s = 0; s < MaxScales; s++)
+                scalePushes[s] += push * isScale * (float)(otherScale == s);
+
+            float moving = inside * (1.0 - isScale);
+            bodyPush += push * share * (1.0 - isScale);
+            otherDisplacement += BodyPointDisplacement(otherState, contactPosition) * moving;
+            touching += moving;
+            shareSum += share * moving;
         }
 
         float bodyDepth = length(bodyPush);
@@ -429,6 +462,14 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
         AccumulateContact(pushes[3], frictions[3], torques[3], approaches[3], properties.invMass, invInertiaWorld,
                           r, bodyPush / max(bodyDepth, 1e-9), bodyDepth, displacement - otherDisplacement / touchingCount,
                           shareSum / touchingCount);
+
+        for (uint scale = 0; scale < MaxScales; scale++)
+        {
+            uint group = ScaleContactGroup + scale;
+            float scaleDepth = length(scalePushes[scale]);
+            AccumulateContact(pushes[group], frictions[group], torques[group], approaches[group], properties.invMass,
+                              invInertiaWorld, r, scalePushes[scale] / max(scaleDepth, 1e-9), scaleDepth, displacement, 1.0);
+        }
     }
 
     uint slot = (body * BodyReductionThreads + threadId.x) * ContactSlotSize;
@@ -441,16 +482,31 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     }
 }
 
+// The push moves both positions, so only the friction and the removed approach change the velocity, and F = M dv / dt
+float3 ContactForce(float3 frictionChange, float3 approachChange, float invMass)
+{
+    return (frictionChange - approachChange) / (invMass * dt * dt);
+}
+
 // Adds up a body's contact slots and applies each group's average (Jacobi averaging), so hundreds of floor contacts
 // neither overshoot nor dilute a handful of wall contacts.
 // Velocity comes from the change in position, so the push out moves the previous position as well: resolving a
 // penetration must not become velocity, or a body starting inside a wall is fired out of it. The motion into the
 // contacts is removed from the velocity instead, which makes contacts inelastic, and friction moves the position
-// alone so that it slows the body down
+// alone so that it slows the body down.
+// Each scale group's force is also kept in BodyScaleForces, the push of that scale on this body, which the scale reads
 [numthreads(1,1,1)]
 void ApplyContacts (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numBodies) return;
+
+    if (IsStatic(id.x))
+    {
+        BodyForces[id.x * BodyForceCount + ForceContact] = 0;
+        for (uint scale = 0; scale < MaxScales; scale++)
+            BodyScaleForces[id.x * MaxScales + scale] = 0;
+        return;
+    }
 
     RigidBodyProperties properties = BodyProperties[id.x];
     RigidBodyState state = BodyStates[id.x];
@@ -476,14 +532,18 @@ void ApplyContacts (uint3 id : SV_DispatchThreadID)
         }
 
         float contacts = max(push.w, 1.0);
+        float3 groupFriction = properties.invMass * friction / contacts;
+        float3 groupApproach = approach / contacts;
         pushChange += properties.invMass * push.xyz / contacts;
-        frictionChange += properties.invMass * friction / contacts;
+        frictionChange += groupFriction;
         angleChange += mul(invInertiaWorld, torque) / contacts;
-        approachChange += approach / contacts;
+        approachChange += groupApproach;
+
+        if (g >= ScaleContactGroup)
+            BodyScaleForces[id.x * MaxScales + g - ScaleContactGroup] = float4(ContactForce(groupFriction, groupApproach, properties.invMass), 0);
     }
 
-    // The push moves both positions, so only the friction and the removed approach change the velocity
-    BodyForces[id.x * BodyForceCount + ForceContact] = float4((frictionChange - approachChange) / (properties.invMass * dt * dt), 0);
+    BodyForces[id.x * BodyForceCount + ForceContact] = float4(ContactForce(frictionChange, approachChange, properties.invMass), 0);
 
     state.position.xyz += pushChange + frictionChange;
     state.prevPosition.xyz += pushChange + approachChange;

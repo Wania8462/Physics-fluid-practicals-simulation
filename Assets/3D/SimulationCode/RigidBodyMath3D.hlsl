@@ -4,6 +4,13 @@
 // Shape ids, matching BodyShape3D in RigidBodies3D.cs
 static const uint ShapeCube = 0;
 static const uint ShapeSphere = 1;
+static const uint ShapeScale = 2;
+
+// A scale is a box base, size.xyz half extents, with a cylinder pan on top, matching RigidBodies3D.ScalePanRadius and
+// ScalePanHalfHeight. size.w is the scale's number, below MaxScales (RigidBodies3D.MaxScales)
+#define MaxScales 2
+static const float ScalePanRadius = 20;
+static const float ScalePanHalfHeight = 1.5;
 
 // Threads per body in the strided reduction kernels, matching RigidBodies3D.ReductionThreads
 #define BodyReductionThreads 64
@@ -20,13 +27,13 @@ static const float MaxCorrectionAngle = 0.2f;
 // Static per-body data uploaded from the CPU, mirrored by RigidBodyProperties3D
 struct RigidBodyProperties
 {
-    float4 size;          // Cube: xyz = half extents. Sphere: x = radius
+    float4 size;          // Cube: xyz = half extents. Sphere: x = radius. Scale: xyz = base half extents, w = its number
     float4 centerOfMass;  // In shape-local space, zero for uniform cubes and spheres
     float4 invInertia;    // Body-frame principal inverse inertia
     uint shape;
     uint start;           // First boundary particle of the body
     uint count;           // Number of boundary particles
-    float invMass;
+    float invMass;        // 0 for static bodies (scales), which only the CPU moves
 };
 
 // Dynamic per-body data owned by the GPU after setup, mirrored by RigidBodyState3D.
@@ -143,6 +150,38 @@ float BoxSignedDistance(float3 localPosition, float3 halfExtents, out float3 loc
     return outsideLength + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
+// Cylinder along y, centred on the origin. Like the box, outside the normal points away from the closest surface point
+// and inside it follows the side or cap of least penetration
+float CylinderSignedDistance(float3 localPosition, float radius, float halfHeight, out float3 localNormal)
+{
+    float radialLength = length(localPosition.xz);
+    float2 d = float2(radialLength - radius, abs(localPosition.y) - halfHeight);
+    float2 outside = max(d, 0.0);
+    float outsideLength = length(outside);
+
+    float3 radial = float3(localPosition.x, 0, localPosition.z) / max(radialLength, 1e-9);
+    float3 vertical = float3(0, step(0.0, localPosition.y) * 2.0 - 1.0, 0);
+    float3 insideNormal = lerp(vertical, radial, step(d.y, d.x));
+    float3 outsideNormal = (outside.x * radial + outside.y * vertical) / max(outsideLength, 1e-9);
+
+    localNormal = lerp(insideNormal, outsideNormal, step(1e-9, outsideLength));
+    return outsideLength + min(max(d.x, d.y), 0.0);
+}
+
+// The union of the base and the pan, with the normal of whichever surface is closer
+float ScaleSignedDistance(float3 localPosition, float3 baseHalfExtents, out float3 localNormal)
+{
+    float3 baseNormal;
+    float baseDistance = BoxSignedDistance(localPosition, baseHalfExtents, baseNormal);
+
+    float3 panNormal;
+    float3 panCentre = float3(0, baseHalfExtents.y + ScalePanHalfHeight, 0);
+    float panDistance = CylinderSignedDistance(localPosition - panCentre, ScalePanRadius, ScalePanHalfHeight, panNormal);
+
+    localNormal = lerp(baseNormal, panNormal, step(panDistance, baseDistance));
+    return min(baseDistance, panDistance);
+}
+
 // Signed distance from a world position to a body's surface, with the outward world normal.
 // Every shape is evaluated and masked by the body's shape id, so there is no branching.
 // Adding a shape: an id above, its signed distance function, and a mask term here
@@ -156,9 +195,13 @@ float BodySignedDistance(RigidBodyProperties properties, RigidBodyState state, f
     float3 sphereNormal;
     float sphereDistance = SphereSignedDistance(local, properties.size.x, sphereNormal);
 
+    float3 scaleNormal;
+    float scaleDistance = ScaleSignedDistance(local, properties.size.xyz, scaleNormal);
+
     float isCube = properties.shape == ShapeCube;
     float isSphere = properties.shape == ShapeSphere;
+    float isScale = properties.shape == ShapeScale;
 
-    worldNormal = QuaternionRotate(state.rotation, cubeNormal * isCube + sphereNormal * isSphere);
-    return cubeDistance * isCube + sphereDistance * isSphere;
+    worldNormal = QuaternionRotate(state.rotation, cubeNormal * isCube + sphereNormal * isSphere + scaleNormal * isScale);
+    return cubeDistance * isCube + sphereDistance * isSphere + scaleDistance * isScale;
 }

@@ -107,6 +107,54 @@ public class Spawn3DParticles : MonoBehaviour
         return positions;
     }
 
+    // Boundary particles on the surface of a scale centred on its base: the base box's faces as a lattice spaced about
+    // sampleDensity apart, then the pan's side and top as rings. The base's top under the pan and the pan's bottom are
+    // inside the scale, so they are left out
+    public float3[] InitScaleSurfacePositions(float3 halfExtents, float panRadius, float panHalfHeight, float sampleDensity)
+    {
+        int3 cells = math.max(1, (int3)math.ceil(2 * halfExtents / sampleDensity));
+        float3 latticeSpacing = 2 * halfExtents / cells;
+        List<float3> positions = new();
+
+        for (int i = 0; i <= cells.x; i++)
+        {
+            for (int j = 0; j <= cells.y; j++)
+            {
+                for (int k = 0; k <= cells.z; k++)
+                {
+                    bool onFace = i == 0 || j == 0 || k == 0 || i == cells.x || j == cells.y || k == cells.z;
+                    float3 position = new float3(i, j, k) * latticeSpacing - halfExtents;
+                    bool underPan = j == cells.y && math.length(position.xz) < panRadius;
+
+                    if (onFace && !underPan)
+                        positions.Add(position);
+                }
+            }
+        }
+
+        // The side's top ring is the rim of the top, so the top's rings start inside it
+        int sideLevels = Mathf.Max(1, Mathf.CeilToInt(2 * panHalfHeight / sampleDensity));
+        for (int level = 0; level <= sideLevels; level++)
+            AddRing(positions, panRadius, halfExtents.y + 2 * panHalfHeight * level / sideLevels, sampleDensity);
+
+        int topRings = Mathf.Max(1, Mathf.CeilToInt(panRadius / sampleDensity));
+        for (int ring = 0; ring < topRings; ring++)
+            AddRing(positions, panRadius * ring / topRings, halfExtents.y + 2 * panHalfHeight, sampleDensity);
+
+        return positions.ToArray();
+    }
+
+    // Points about sampleDensity apart around a horizontal circle, one point for a radius of 0
+    private static void AddRing(List<float3> positions, float radius, float y, float sampleDensity)
+    {
+        int count = Mathf.Max(1, Mathf.CeilToInt(2 * math.PI * radius / sampleDensity));
+        for (int i = 0; i < count; i++)
+        {
+            float angle = 2 * math.PI * i / count;
+            positions.Add(new float3(radius * math.cos(angle), y, radius * math.sin(angle)));
+        }
+    }
+
     public Tank GetTank(float particleRadius)
     {
         float3 size = new float3(particleCubeLength) + tankPadding * 2;

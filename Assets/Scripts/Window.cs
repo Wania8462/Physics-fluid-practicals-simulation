@@ -9,7 +9,8 @@ public enum FieldType
 {
     Numeric,
     Dropdown,
-    Toggle
+    Toggle,
+    Readout     // A value with its unit that the user can't edit
 }
 
 [Serializable]
@@ -18,7 +19,7 @@ public struct Field
     public string name;
     public FieldType fieldType;
 
-    // Numeric
+    // Numeric, and Readout without min and max
     public float value;
     public float min;
     public float max;
@@ -38,6 +39,7 @@ public struct Field
             FieldType.Numeric => 110,
             FieldType.Dropdown => 100,
             FieldType.Toggle => 56,
+            FieldType.Readout => 56,
             _ => throw new Exception($"There is no height for {fieldType}"),
         };
     }
@@ -81,6 +83,9 @@ public class Window : MonoBehaviour
     // A group's background holds member windows instead of fields
     public bool IsGroup { get; private set; }
 
+    // Only groupable windows can be dropped onto each other
+    public bool Groupable { get; set; }
+
     private void Update()
     {
         if (!topBarHeld)
@@ -89,6 +94,8 @@ public class Window : MonoBehaviour
         transform.position = Input.mousePosition + mouseOffset;
 
         Window under = TopmostAt(transform.parent, Input.mousePosition, this);
+        if (under && !(Groupable && under.Groupable))
+            under = null;
         if (under != hovered)
         {
             if (hovered)

@@ -1,9 +1,13 @@
 using System;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 public class WindowManager : MonoBehaviour
 {
+    // The fields of a scale window
+    private const int ScaleWeight = 0, ScaleShownInWorld = 1;
+
     // The New object window's density options, in kg/m³
     private static readonly (string name, float density)[] Materials =
     {
@@ -21,9 +25,24 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private SimulationAPI api;
     [SerializeField] private RenderAPI renderApi;
 
+    // Each scale's window, indexed by the scale's number, null for a scale that isn't out
+    private readonly Window[] scaleWindows = new Window[RigidBodies3D.MaxScales];
+
+    // The scale being dragged, -1 for none. It moves on a plane facing the camera through where it was grabbed
+    private int draggedScale = -1;
+    private Plane dragPlane;
+    private Vector3 dragOffset;
+
+    private void Update()
+    {
+        UpdateScales();
+        DragScale();
+        BringClickedWindowToFront();
+    }
+
     // Like an OS window manager, a clicked window comes to the front. Checked here rather than through UI events, so
     // clicks the fields swallow still count
-    private void Update()
+    private void BringClickedWindowToFront()
     {
         if (!Input.GetMouseButtonDown(0))
             return;
@@ -65,6 +84,7 @@ public class WindowManager : MonoBehaviour
         int id = api.AddBody((BodyShape3D)fields[Shape].selected, fields[Volume].value / 1000, fields[Mass].value);
         Window window = CreateWindow("New object", fields);
         window.Renamable = true;
+        window.Groupable = true;
 
         window.FieldChanged += index =>
         {
@@ -150,6 +170,91 @@ public class WindowManager : MonoBehaviour
         };
     }
 
+    // Spawns the first scale that isn't out, or nothing once they all are. The window shows its reading, which is also
+    // written on the scale and, while Show in world is on, over it
+    public void CreateScaleWindow()
+    {
+        int scale = Array.FindIndex(scaleWindows, window => !window);
+        if (scale < 0)
+            return;
+
+        api.AddScale(scale);
+        Window window = CreateWindow($"Scale {scale + 1}",
+            new Field { name = "Weight", fieldType = FieldType.Readout, unit = "N" },
+            new Field { name = "Show in world", fieldType = FieldType.Toggle, isOn = true });
+        scaleWindows[scale] = window;
+        renderApi.ShowScaleLabel(scale, true);
+
+        window.FieldChanged += index =>
+        {
+            if (index == ScaleShownInWorld)
+                renderApi.ShowScaleLabel(scale, window.fields[ScaleShownInWorld].isOn);
+        };
+
+        window.Closed += () =>
+        {
+            api.RemoveScale(scale);
+            renderApi.SetScaleText(scale, null);
+            scaleWindows[scale] = null;
+        };
+    }
+
+    private void UpdateScales()
+    {
+        for (int scale = 0; scale < scaleWindows.Length; scale++)
+        {
+            Window window = scaleWindows[scale];
+            if (!window)
+                continue;
+
+            Field weight = window.fields[ScaleWeight];
+            weight.value = api.GetScaleReading(scale);
+            window.SetField(ScaleWeight, weight);
+            renderApi.SetScaleText(scale, $"{weight.value:0.0} N");
+        }
+    }
+
+    // Right mouse on a scale grabs it, the closest one under the cursor, and it follows the cursor until released
+    private void DragScale()
+    {
+        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+
+        if (Input.GetMouseButtonDown(1) && !EventSystem.current.IsPointerOverGameObject())
+        {
+            float nearest = float.PositiveInfinity;
+            for (int scale = 0; scale < scaleWindows.Length; scale++)
+            {
+                if (scaleWindows[scale] && api.GetScaleBounds(scale).IntersectRay(ray, out float distance) && distance < nearest)
+                {
+                    nearest = distance;
+                    draggedScale = scale;
+                }
+            }
+
+            if (draggedScale >= 0)
+            {
+                Vector3 grabbed = ray.GetPoint(nearest);
+                dragPlane = new Plane(-Camera.main.transform.forward, grabbed);
+                dragOffset = api.GetScalePosition(draggedScale) - grabbed;
+                api.SetDraggingScale(true);
+            }
+        }
+
+        if (draggedScale < 0)
+            return;
+
+        // Closing the window removes the scale mid-drag
+        if (!Input.GetMouseButton(1) || !scaleWindows[draggedScale])
+        {
+            draggedScale = -1;
+            api.SetDraggingScale(false);
+        }
+        else if (dragPlane.Raycast(ray, out float enter))
+        {
+            api.MoveScale(draggedScale, ray.GetPoint(enter) + dragOffset);
+        }
+    }
+
     private Window CreateWindow(string title, params Field[] fields)
     {
         Window window = Instantiate(windowPrefab, new(1000, 500, 0), Quaternion.identity, canvas).GetComponent<Window>();
@@ -166,6 +271,7 @@ public class WindowManager : MonoBehaviour
         if (!target.IsGroup)
         {
             Window group = CreateWindow("Objects");
+            group.Groupable = true;
             group.transform.position = target.transform.position;
             group.Add(target);
             target = group;

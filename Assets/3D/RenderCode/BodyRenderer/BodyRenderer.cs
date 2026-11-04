@@ -1,7 +1,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 
-// Draws every rigid body as a lit, opaque cube or sphere, posed in the vertex shader straight from the body buffers
+// Draws every rigid body as a lit, opaque cube, sphere or scale, posed in the vertex shader straight from the body buffers
 public class BodyRenderer : MonoBehaviour
 {
     // Name of Custom/Body3D's depth-only pass
@@ -11,22 +11,31 @@ public class BodyRenderer : MonoBehaviour
     [SerializeField] private Mesh cubeMesh;
     [Tooltip("Unit sphere, diameter 1, such as Unity's built-in Sphere")]
     [SerializeField] private Mesh sphereMesh;
+    [Tooltip("Cylinder of diameter 1 and height 2 along y, such as Unity's built-in Cylinder. Draws the pans of the scales")]
+    [SerializeField] private Mesh cylinderMesh;
     [Tooltip("A material with the Custom/Body3D shader")]
     [SerializeField] private Material material;
     [SerializeField] private Color color = Color.gray;
 
     private GraphicsBuffer cubeCommandBuf;
     private GraphicsBuffer sphereCommandBuf;
+    private GraphicsBuffer scaleBaseCommandBuf;
+    private GraphicsBuffer scalePanCommandBuf;
     private RenderParams cubeRp;
     private RenderParams sphereRp;
+    private RenderParams scaleBaseRp;
+    private RenderParams scalePanRp;
     private int depthPass;
 
     // The body buffers are packed, or hold one all-zero body when there are none, which collapses to a point.
-    // Each draw covers every body and the shader collapses the bodies of the other shape
+    // Each draw covers every body and the shader collapses the bodies of the other shape. A scale is two draws, its
+    // base as a cube and its pan as a cylinder
     public void Setup(SimulationManager sim)
     {
-        cubeRp = SetupDraw(sim, cubeMesh, 0, ref cubeCommandBuf);
-        sphereRp = SetupDraw(sim, sphereMesh, 1, ref sphereCommandBuf);
+        cubeRp = SetupDraw(sim, cubeMesh, BodyShape3D.Cube, 0, ref cubeCommandBuf);
+        sphereRp = SetupDraw(sim, sphereMesh, BodyShape3D.Sphere, 0, ref sphereCommandBuf);
+        scaleBaseRp = SetupDraw(sim, cubeMesh, BodyShape3D.Scale, 0, ref scaleBaseCommandBuf);
+        scalePanRp = SetupDraw(sim, cylinderMesh, BodyShape3D.Scale, 1, ref scalePanCommandBuf);
 
         // Checked after the draws are set up, so the bodies still draw with a shader that lacks the pass
         depthPass = material.FindPass(DepthPassName);
@@ -34,8 +43,8 @@ public class BodyRenderer : MonoBehaviour
             throw new System.InvalidOperationException($"{material.shader.name} has no {DepthPassName} pass, so the screen-space fluid can't be hidden behind bodies");
     }
 
-    // shape matches BodyShape3D
-    private RenderParams SetupDraw(SimulationManager sim, Mesh mesh, int shape, ref GraphicsBuffer commandBuf)
+    // part is drawPart in Custom/Body3D, for scales 0 is the base and 1 the pan
+    private RenderParams SetupDraw(SimulationManager sim, Mesh mesh, BodyShape3D shape, int part, ref GraphicsBuffer commandBuf)
     {
         ComputeHelper.Release(commandBuf);
         commandBuf = ComputeHelper.CreateCommandBuffer();
@@ -44,7 +53,8 @@ public class BodyRenderer : MonoBehaviour
         RenderParams rp = ComputeHelper.CreateRenderParams(material);
         rp.matProps.SetBuffer("BodyStates", sim.Buffers["BodyStates"]);
         rp.matProps.SetBuffer("BodyProperties", sim.Buffers["BodyProperties"]);
-        rp.matProps.SetInteger("drawShape", shape);
+        rp.matProps.SetInteger("drawShape", (int)shape);
+        rp.matProps.SetInteger("drawPart", part);
         return rp;
     }
 
@@ -52,6 +62,8 @@ public class BodyRenderer : MonoBehaviour
     {
         Draw(cubeRp, cubeMesh, cubeCommandBuf);
         Draw(sphereRp, sphereMesh, sphereCommandBuf);
+        Draw(scaleBaseRp, cubeMesh, scaleBaseCommandBuf);
+        Draw(scalePanRp, cylinderMesh, scalePanCommandBuf);
     }
 
     // Draws every body into the current depth buffer only, with the same buffers and properties as DrawBodies.
@@ -60,6 +72,8 @@ public class BodyRenderer : MonoBehaviour
     {
         cmd.DrawMeshInstancedIndirect(cubeMesh, 0, material, depthPass, cubeCommandBuf, 0, cubeRp.matProps);
         cmd.DrawMeshInstancedIndirect(sphereMesh, 0, material, depthPass, sphereCommandBuf, 0, sphereRp.matProps);
+        cmd.DrawMeshInstancedIndirect(cubeMesh, 0, material, depthPass, scaleBaseCommandBuf, 0, scaleBaseRp.matProps);
+        cmd.DrawMeshInstancedIndirect(cylinderMesh, 0, material, depthPass, scalePanCommandBuf, 0, scalePanRp.matProps);
     }
 
     // Colour is set every frame so inspector changes show while playing. The light direction is a global set by RenderManager
@@ -73,6 +87,8 @@ public class BodyRenderer : MonoBehaviour
     {
         ComputeHelper.Release(cubeCommandBuf);
         ComputeHelper.Release(sphereCommandBuf);
+        ComputeHelper.Release(scaleBaseCommandBuf);
+        ComputeHelper.Release(scalePanCommandBuf);
     }
 
     private void OnDestroy() => ReleaseBuffers();

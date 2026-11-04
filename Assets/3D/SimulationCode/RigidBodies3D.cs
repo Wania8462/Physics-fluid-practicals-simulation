@@ -4,11 +4,12 @@ using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using UnityEngine;
 
-// Shape ids, matching ShapeCube and ShapeSphere in RigidBodyMath3D.hlsl
+// Shape ids, matching ShapeCube, ShapeSphere and ShapeScale in RigidBodyMath3D.hlsl
 public enum BodyShape3D
 {
     Cube = 0,
-    Sphere = 1
+    Sphere = 1,
+    Scale = 2
 }
 
 [Serializable]
@@ -23,6 +24,8 @@ public struct RigidBodySettings3D
     [Tooltip("Euler angles in degrees")]
     public float3 bodyRotation;
     public float boundaryBodyMass;
+    [Tooltip("Scales only: which scale this is, below RigidBodies3D.MaxScales")]
+    public int scale;
 
     // A slot of the bodies array without a body. SimulationManager.RemoveBody clears slots to default, whose radius is 0
     public bool IsEmpty => bodyRadius == 0;
@@ -75,12 +78,20 @@ public static class RigidBodies3D
 {
     public const int MaxBodies = 10;
 
+    // Scales are static bodies the CPU places, a box base with a cylinder pan on top. Matching MaxScales, ScalePanRadius
+    // and ScalePanHalfHeight in RigidBodyMath3D.hlsl.
+    // ponytail: one fixed size, picked so a 2 L block (25 units wide) fits on the pan. Tune here and in the hlsl
+    public const int MaxScales = 2;
+    public static readonly float3 ScaleHalfExtents = new(25, 4, 25);
+    public const float ScalePanRadius = 20;
+    public const float ScalePanHalfHeight = 1.5f;
+
     // Threads per body in the strided reduction kernels, matching BodyReductionThreads in RigidBodyMath3D.hlsl
     public const int ReductionThreads = 64;
 
     // float4s per reduction slot, matching CouplingSlotSize and ContactSlotSize in RigidBodyKernels3D.hlsl
     public const int CouplingSlotSize = 2;
-    public const int ContactSlotSize = 16;
+    public const int ContactSlotSize = (4 + MaxScales) * 4;
 
     // Forces per body in BodyForces, matching BodyForceCount in RigidBodyMath3D.hlsl
     public const int ForceCount = 3;
@@ -129,7 +140,7 @@ public static class RigidBodies3D
 
         RigidBodyProperties3D bodyProperties = new()
         {
-            size = new float4(new float3(body.bodyRadius), 0),
+            size = body.shape == BodyShape3D.Scale ? new float4(ScaleHalfExtents, body.scale) : new float4(new float3(body.bodyRadius), 0),
             // Uniform cubes and spheres balance at their centre
             centerOfMass = float4.zero,
             shape = (uint)body.shape,
@@ -194,9 +205,16 @@ public static class RigidBodies3D
     }
 
     // Uniform solids: sphere I = 2/5 m r^2, cube I = 1/6 m a^2 with edge a = 2r. A mass <= 0 falls back to the
-    // boundary particle count, like 2D
+    // boundary particle count, like 2D. Scales are static, with infinite mass and inertia
     public static void SetMassProperties(ref RigidBodyProperties3D properties, RigidBodySettings3D body)
     {
+        if (body.shape == BodyShape3D.Scale)
+        {
+            properties.invMass = 0;
+            properties.invInertia = float4.zero;
+            return;
+        }
+
         float mass = body.boundaryBodyMass > 0 ? body.boundaryBodyMass : properties.count;
         float r = body.bodyRadius;
         float inertia = body.shape switch
@@ -228,8 +246,8 @@ public static class RigidBodies3D
             int index = data.inspectorIndices[b];
 
             // The array was shortened in the inspector, that body updates on reset. Bodies aren't in slot order, because
-            // an added body can reuse a lower slot, so the rest still have to be checked
-            if (index >= inspectorBodies.Length) continue;
+            // an added body can reuse a lower slot, so the rest still have to be checked. Scales have no mass to update
+            if (index >= inspectorBodies.Length || inspectorBodies[index].shape == BodyShape3D.Scale) continue;
 
             float mass = inspectorBodies[index].boundaryBodyMass;
             if (mass <= 0)
@@ -271,6 +289,7 @@ public static class RigidBodies3D
         buffers["BodyCouplingSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * CouplingSlotSize);
         buffers["BodyContactSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * ContactSlotSize);
         buffers["BodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
+        buffers["BodyScaleForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * MaxScales);
 
         // Read-only aliases share the instances above, see the note in Simulation.compute
         buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];
@@ -358,6 +377,7 @@ public static class RigidBodies3D
     {
         BodyShape3D.Cube => spawn.InitCubeSurfacePositions(body.bodyRadius, body.sampleDensity),
         BodyShape3D.Sphere => spawn.InitSphereSurfacePositions(body.bodyRadius, body.sampleDensity),
+        BodyShape3D.Scale => spawn.InitScaleSurfacePositions(ScaleHalfExtents, ScalePanRadius, ScalePanHalfHeight, body.sampleDensity),
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no sampler for shape {body.shape}")
     };
 
@@ -366,6 +386,8 @@ public static class RigidBodies3D
     {
         BodyShape3D.Cube => BoxSignedDistance(local, new float3(body.bodyRadius)),
         BodyShape3D.Sphere => math.length(local) - body.bodyRadius,
+        BodyShape3D.Scale => math.min(BoxSignedDistance(local, ScaleHalfExtents),
+            CylinderSignedDistance(local - new float3(0, ScaleHalfExtents.y + ScalePanHalfHeight, 0), ScalePanRadius, ScalePanHalfHeight)),
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no signed distance for shape {body.shape}")
     };
 
@@ -373,6 +395,13 @@ public static class RigidBodies3D
     {
         float3 q = math.abs(local) - halfExtents;
         return math.length(math.max(q, 0f)) + math.min(math.cmax(q), 0f);
+    }
+
+    // Cylinder along y, centred on the origin
+    private static float CylinderSignedDistance(float3 local, float radius, float halfHeight)
+    {
+        float2 d = new(math.length(local.xz) - radius, math.abs(local.y) - halfHeight);
+        return math.length(math.max(d, 0f)) + math.min(math.cmax(d), 0f);
     }
 
     private static quaternion GetRotation(RigidBodySettings3D body) => quaternion.Euler(math.radians(body.bodyRotation));

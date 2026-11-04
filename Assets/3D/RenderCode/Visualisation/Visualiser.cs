@@ -15,11 +15,14 @@ public enum BodyForce
 }
 
 // Draws the forces on every rigid body as arrows from its centre of mass, posed in the vertex shader straight from the
-// body buffers like BodyRenderer, and their values as UI labels. Forces are the last step's, so they stay while paused
+// body buffers like BodyRenderer, and their values as UI labels. Forces are the last step's, so they stay while paused.
+// Also writes the scales' readings on the sides of their bases, and as a UI label over their pans
 public class Visualiser : MonoBehaviour
 {
     private const int ArrowsPerBody = 4;    // BodyForce values
     private static readonly Vector2 ValuePadding = new(8, 4);
+    // How far the side readings sit off the base, so they don't flicker against it
+    private const float SideTextGap = 0.05f;
 
     [Tooltip("The camera the arrows are drawn for")]
     [SerializeField] private Camera cam;
@@ -43,10 +46,22 @@ public class Visualiser : MonoBehaviour
     [SerializeField] private int valueFontSize = 16;
     [Tooltip("Sim force of 1 N, which the values are divided by. The Visualisation window sets it from SimulationAPI.ForceScale when it opens")]
     [SerializeField] internal float forcePerNewton = 1;
+    [Tooltip("Colour of the scale readings, on their sides and in their labels")]
+    [SerializeField] private Color scaleColor = Color.black;
 
     // Set through RenderAPI, indexed by BodyForce
     internal readonly bool[] shown = new bool[ArrowsPerBody];
     internal bool showValues;
+
+    // Set through RenderAPI, indexed by scale. A scale without text has nothing drawn
+    internal readonly string[] scaleTexts = new string[RigidBodies3D.MaxScales];
+    internal readonly bool[] scaleLabelsShown = new bool[RigidBodies3D.MaxScales];
+
+    // Where the scales are, from Setup
+    private SimulationManager sim;
+
+    // The readings on the 4 sides of each scale's base, made the first time the scale has text
+    private readonly TextMeshPro[][] sideTexts = new TextMeshPro[RigidBodies3D.MaxScales][];
 
     private Mesh mesh;
     private GraphicsBuffer commandBuf;
@@ -67,6 +82,8 @@ public class Visualiser : MonoBehaviour
 
     public void Setup(SimulationManager sim)
     {
+        this.sim = sim;
+
         if (mesh == null)
             mesh = CreateArrowMesh();
 
@@ -148,28 +165,95 @@ public class Visualiser : MonoBehaviour
                     // The placeholder body of an empty buffer has no forces
                     if (!shown[arrow] || force == Vector3.zero) continue;
 
-                    Vector3 screen = cam.WorldToScreenPoint((Vector3)states[body].position.xyz + force * arrowScale / 2);
-                    if (screen.z < 0) continue;     // Behind the camera
-
-                    if (used == labels.Count)
-                        labels.Add(CreateLabel());
-                    (RectTransform box, TMP_Text text) = labels[used++];
-
-                    text.text = $"{force.magnitude / forcePerNewton:0.0} N";
-                    text.color = colors[arrow];
-                    text.fontSize = valueFontSize;
-                    box.sizeDelta = text.GetPreferredValues() + ValuePadding;
-
-                    // A null camera is right for an overlay canvas
-                    RectTransformUtility.ScreenPointToLocalPointInRectangle(valueParent, screen, null, out Vector2 local);
-                    box.localPosition = local;
-                    box.gameObject.SetActive(true);
+                    Vector3 middle = (Vector3)states[body].position.xyz + force * arrowScale / 2;
+                    PlaceLabel(ref used, middle, $"{force.magnitude / forcePerNewton:0.0} N", colors[arrow]);
                 }
+            }
+        }
+
+        for (int scale = 0; scale < RigidBodies3D.MaxScales; scale++)
+        {
+            if (scaleTexts[scale] == null || sim == null || !sim.TryGetScalePosition(scale, out Vector3 position))
+            {
+                if (sideTexts[scale] != null)
+                    sideTexts[scale][0].transform.parent.gameObject.SetActive(false);
+                continue;
+            }
+
+            sideTexts[scale] ??= CreateSideTexts(scale);
+            Transform sides = sideTexts[scale][0].transform.parent;
+            sides.gameObject.SetActive(true);
+            sides.position = position;
+            foreach (TextMeshPro side in sideTexts[scale])
+                side.text = scaleTexts[scale];
+
+            if (scaleLabelsShown[scale])
+            {
+                float panTop = RigidBodies3D.ScaleHalfExtents.y + 2 * RigidBodies3D.ScalePanHalfHeight;
+                PlaceLabel(ref used, position + Vector3.up * panTop, scaleTexts[scale], scaleColor);
             }
         }
 
         for (int i = used; i < labels.Count; i++)
             labels[i].box.gameObject.SetActive(false);
+    }
+
+    // Shows the next label of the pool over a point in the world, unless the point is behind the camera
+    private void PlaceLabel(ref int used, Vector3 world, string value, Color color)
+    {
+        Vector3 screen = cam.WorldToScreenPoint(world);
+        if (screen.z < 0) return;
+
+        if (used == labels.Count)
+            labels.Add(CreateLabel());
+        (RectTransform box, TMP_Text text) = labels[used++];
+
+        text.text = value;
+        text.color = color;
+        text.fontSize = valueFontSize;
+        box.sizeDelta = text.GetPreferredValues() + ValuePadding;
+
+        // A null camera is right for an overlay canvas
+        RectTransformUtility.ScreenPointToLocalPointInRectangle(valueParent, screen, null, out Vector2 local);
+        box.localPosition = local;
+        box.gameObject.SetActive(true);
+    }
+
+    // One text on each side of the base, facing out, sized to the side and filled by auto sizing. They are children of
+    // one object that is moved to the scale's position
+    private TextMeshPro[] CreateSideTexts(int scale)
+    {
+        Transform sides = new GameObject($"Scale {scale} reading").transform;
+        sides.SetParent(transform, false);
+
+        Vector3 halfExtents = RigidBodies3D.ScaleHalfExtents;
+        Vector3[] outwards = { Vector3.right, Vector3.left, Vector3.forward, Vector3.back };
+        TextMeshPro[] texts = new TextMeshPro[outwards.Length];
+
+        for (int i = 0; i < outwards.Length; i++)
+        {
+            Vector3 outward = outwards[i];
+            TextMeshPro text = new GameObject("Side", typeof(RectTransform), typeof(TextMeshPro)).GetComponent<TextMeshPro>();
+            text.transform.SetParent(sides, false);
+
+            // Text reads the right way round seen along its forward, so it looks into the base
+            text.transform.localPosition = Vector3.Scale(outward, halfExtents) + outward * SideTextGap;
+            text.transform.localRotation = Quaternion.LookRotation(-outward);
+
+            float width = 2 * Mathf.Abs(Vector3.Dot(Quaternion.LookRotation(-outward) * Vector3.right, halfExtents));
+            text.rectTransform.sizeDelta = new Vector2(width, 2 * halfExtents.y);
+            text.enableAutoSizing = true;
+            text.fontSizeMin = 1;
+            text.fontSizeMax = 100;
+            text.alignment = TextAlignmentOptions.Center;
+            text.fontStyle = FontStyles.Bold;
+            text.textWrappingMode = TextWrappingModes.NoWrap;
+            text.color = scaleColor;
+
+            texts[i] = text;
+        }
+
+        return texts;
     }
 
     // A white box with the value centred on it. Neither takes clicks, so they don't block the windows or the scene

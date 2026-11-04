@@ -108,6 +108,78 @@ public class SimulationAPI : MonoBehaviour
         manager.RemoveBody(id);
     }
 
+    // Scales are numbered 0 to RigidBodies3D.MaxScales - 1. Neither the fluid nor the bodies move them, only MoveScale.
+    // A new one goes where AddBody puts bodies
+    public void AddScale(int scale)
+    {
+        if (scale < 0 || scale >= RigidBodies3D.MaxScales)
+            throw new ArgumentOutOfRangeException(nameof(scale), scale, $"Scales are numbered 0 to {RigidBodies3D.MaxScales - 1}.");
+
+        Transform camera = Camera.main.transform;
+        float3 position = (float3)camera.position + (float3)camera.forward * (SpawnDistance * math.cmax(manager.Tank.size));
+
+        manager.AddScale(new RigidBodySettings3D
+        {
+            shape = BodyShape3D.Scale,
+            bodyRadius = RigidBodies3D.ScaleHalfExtents.x,  // Unused by scales, but a slot with radius 0 is empty
+            sampleDensity = BodySampleDensity,
+            bodyPosition = ClampScale(position),
+            scale = scale
+        });
+    }
+
+    public void RemoveScale(int scale)
+    {
+        manager.RemoveScale(scale);
+    }
+
+    // Moves the scale to the position, or as close as it fits inside the tank. The position is the base's centre
+    public void MoveScale(int scale, Vector3 position)
+    {
+        manager.MoveScale(scale, ClampScale(position));
+    }
+
+    // The base's centre
+    public Vector3 GetScalePosition(int scale)
+    {
+        if (!manager.TryGetScalePosition(scale, out Vector3 position))
+            throw new ArgumentException($"There is no scale {scale}.", nameof(scale));
+
+        return position;
+    }
+
+    // The base and the pan
+    public Bounds GetScaleBounds(int scale)
+    {
+        Vector3 position = GetScalePosition(scale);
+        float3 halfExtents = RigidBodies3D.ScaleHalfExtents;
+        Bounds bounds = new(position, 2 * (Vector3)halfExtents);
+        bounds.Encapsulate(position + Vector3.up * (halfExtents.y + 2 * RigidBodies3D.ScalePanHalfHeight));
+        return bounds;
+    }
+
+    // In N, how hard the bodies on the scale push it, so in fluid it reads their weight minus their buoyancy
+    public float GetScaleReading(int scale)
+    {
+        return manager.ScaleForce(scale) / ForceScale;
+    }
+
+    // While true, right mouse doesn't pull the bodies, so dragging a scale doesn't drag them along
+    public void SetDraggingScale(bool dragging)
+    {
+        manager.draggingScale = dragging;
+    }
+
+    // The whole scale, base and pan, inside the tank, with the base centred on the position
+    private float3 ClampScale(float3 position)
+    {
+        float3 halfExtents = RigidBodies3D.ScaleHalfExtents;
+        float3 innerHalfSize = manager.Tank.innerHalfSize;
+        float3 min = -innerHalfSize + halfExtents;
+        float3 max = innerHalfSize - halfExtents - new float3(0, 2 * RigidBodies3D.ScalePanHalfHeight, 0);
+        return math.clamp(position, min, max);
+    }
+
     private float ToSimRadius(BodyShape3D shape, float volume)
     {
         if (volume <= 0)

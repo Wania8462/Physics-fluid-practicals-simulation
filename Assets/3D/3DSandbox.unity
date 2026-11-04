@@ -200,6 +200,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 3DRender::BodyRenderer
   cubeMesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
   sphereMesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+  cylinderMesh: {fileID: 10206, guid: 0000000000000000e000000000000000, type: 0}
   material: {fileID: 2100000, guid: df7c08704d74be24a8144080bf1365c5, type: 2}
   color: {r: 0.5, g: 0.5, b: 0.5, a: 1}
 --- !u!114 &277284709
@@ -219,6 +220,7 @@ MonoBehaviour:
   particleRenderer: {fileID: 277284705}
   bodyRenderer: {fileID: 277284708}
   screenSpaceFluidRenderer: {fileID: 277284710}
+  visualiser: {fileID: 0}
   fluidRenderMode: 1
   drawSolidBodies: 1
   lightDirection: {x: -0.4, y: -1, z: 0.6}
@@ -404,6 +406,7 @@ MonoBehaviour:
         y: 0
         z: 0
       boundaryBodyMass: 500
+      scale: 0
     - shape: 1
       bodyRadius: 10
       sampleDensity: 1
@@ -416,6 +419,7 @@ MonoBehaviour:
         y: 0
         z: 0
       boundaryBodyMass: 500
+      scale: 0
   particleRadius: 0.5
   targetFrameRate: 60
   useRealDeltaTime: 0

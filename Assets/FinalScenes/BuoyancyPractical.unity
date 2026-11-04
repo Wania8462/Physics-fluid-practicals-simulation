@@ -1103,7 +1103,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 295176930}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 1218924492}
+        m_TargetAssemblyTypeName: WindowManager, Assembly-CSharp
+        m_MethodName: CreateVisualisationWindow
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument: 
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!114 &295176930
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -8328,6 +8340,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 3DRender::BodyRenderer
   cubeMesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
   sphereMesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+  cylinderMesh: {fileID: 10206, guid: 0000000000000000e000000000000000, type: 0}
   material: {fileID: 2100000, guid: df7c08704d74be24a8144080bf1365c5, type: 2}
   color: {r: 0.5, g: 0.5, b: 0.5, a: 1}
 --- !u!114 &2059809244
@@ -8408,6 +8421,7 @@ MonoBehaviour:
   resultantColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
   valueFontSize: 10
   forcePerNewton: 1
+  scaleColor: {r: 0, g: 0, b: 0, a: 1}
 --- !u!114 &2059809248
 MonoBehaviour:
   m_ObjectHideFlags: 0

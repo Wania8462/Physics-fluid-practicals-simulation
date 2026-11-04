@@ -80,6 +80,10 @@ RWStructuredBuffer<float4> BodyContactSums;
 // Only written, for the Visualiser to draw
 RWStructuredBuffer<float4> BodyForces;
 
+// The last step's push of each scale on each body, MaxScales per body, in the same units as BodyForces. The CPU adds
+// them up per scale for its reading
+RWStructuredBuffer<float4> BodyScaleForces;
+
 // Read-only views bound to the same GPU buffers as the declarations above. Kernels that only read a
 // buffer go through these, because a compute shader gets 8 read-write slots but 128 read-only ones.
 // A kernel must use either the read-write or the read-only name of a buffer, never both

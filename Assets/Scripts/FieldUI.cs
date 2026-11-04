@@ -34,18 +34,27 @@ public class FieldUI : MonoBehaviour
         this.index = index;
         label.text = field.name;
 
+        // A readout is the numeric field's top row, its value shown in the input field the user can't type into
         bool numeric = field.fieldType == FieldType.Numeric;
-        input.gameObject.SetActive(numeric);
-        unit.gameObject.SetActive(numeric);
+        bool hasValue = numeric || field.fieldType == FieldType.Readout;
+        input.gameObject.SetActive(hasValue);
+        input.interactable = numeric;
+        unit.gameObject.SetActive(hasValue);
         slider.gameObject.SetActive(numeric);
         minText.gameObject.SetActive(numeric);
         maxText.gameObject.SetActive(numeric);
         dropdown.gameObject.SetActive(field.fieldType == FieldType.Dropdown);
         toggle.gameObject.SetActive(field.fieldType == FieldType.Toggle);
 
-        if (numeric)
-        {
+        if (hasValue)
             unit.text = field.unit;
+
+        if (field.fieldType == FieldType.Readout)
+        {
+            input.SetTextWithoutNotify(field.value.ToString("0.0"));
+        }
+        else if (numeric)
+        {
             minText.text = field.min.ToString();
             maxText.text = field.max.ToString();
             slider.minValue = field.min;

@@ -5,6 +5,7 @@ using TMPro;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 
 [Serializable]
 public struct SimulationSettings3D
@@ -66,6 +67,13 @@ public class SimulationManager : MonoBehaviour
     // Body buffers that AddBody or RemoveBody replaced, released at the start of the next Update
     private readonly List<ComputeBuffer> replacedBuffers = new();
 
+    // The settings.bodies slot of each scale, -1 for a scale that isn't there
+    private readonly int[] scaleSlots = Enumerable.Repeat(-1, RigidBodies3D.MaxScales).ToArray();
+    // The last BodyScaleForces read back, a frame or two behind the GPU
+    private Vector4[] scaleForces;
+    // While the user drags a scale, right mouse doesn't also pull the bodies
+    internal bool draggingScale;
+
     private int3 threadGroups;
     private int3 gridThreadGroups;
     private int3 boundaryThreadGroups;
@@ -116,6 +124,11 @@ public class SimulationManager : MonoBehaviour
         }
 
         UpdateComputeSettings();
+
+        // Async, so the GPU isn't stalled
+        if (scaleSlots.Any(slot => slot >= 0))
+            AsyncGPUReadback.Request(Buffers["BodyScaleForces"], request => { if (!request.hasError) scaleForces = request.GetData<Vector4>().ToArray(); });
+
         StepFinished?.Invoke();
     }
 
@@ -174,7 +187,7 @@ public class SimulationManager : MonoBehaviour
 
         if (numBodies > 0)
         {
-            if (Input.GetMouseButton(1))
+            if (Input.GetMouseButton(1) && !draggingScale)
             {
                 compute.SetVector("mousePosition", GetMousePos());
                 DispatchPerBody("AttractBodiesToMouse");
@@ -359,6 +372,64 @@ public class SimulationManager : MonoBehaviour
         RigidBodies3D.RemoveBody(bodies, id);
         RigidBodies3D.AddBody(bodies, body, id, spawn);
         RebuildBodies();
+    }
+
+    // A scale is a static body, so it is added like one and then only moved by MoveScale
+    internal void AddScale(RigidBodySettings3D scale)
+    {
+        if (scaleSlots[scale.scale] >= 0)
+            throw new InvalidOperationException($"Scale {scale.scale} is already there.");
+
+        scaleSlots[scale.scale] = AddBody(scale);
+    }
+
+    internal void RemoveScale(int scale)
+    {
+        RemoveBody(ScaleSlot(scale));
+        scaleSlots[scale] = -1;
+    }
+
+    // Puts the scale at a new position at once. The GPU never moves it, so its state is written over, at rest
+    internal void MoveScale(int scale, float3 position)
+    {
+        int slot = ScaleSlot(scale);
+        settings.bodies[slot].bodyPosition = position;
+
+        // Before Setup there is no body data yet, and Setup builds the scale where the slot says
+        if (bodies == null) return;
+
+        float4 at = new(position, 0);
+        RigidBodyState3D state = new() { position = at, rotation = quaternion.identity.value, prevPosition = at, prevRotation = quaternion.identity.value };
+        Buffers["BodyStates"].SetData(new[] { state }, 0, bodies.inspectorIndices.IndexOf(slot), 1);
+    }
+
+    // The CPU places the scales, so this is exact. Public for the renderers, which label the scales
+    public bool TryGetScalePosition(int scale, out Vector3 position)
+    {
+        int slot = scale >= 0 && scale < scaleSlots.Length ? scaleSlots[scale] : -1;
+        position = slot >= 0 ? settings.bodies[slot].bodyPosition : default;
+        return slot >= 0;
+    }
+
+    // How hard the bodies push down on the scale, in sim force. That is what the scale pushes up on them, which
+    // BodyScaleForces holds per body. The readback lags a frame or two, and is empty until the first one arrives
+    internal float ScaleForce(int scale)
+    {
+        ScaleSlot(scale);
+        if (scaleForces == null) return 0;
+
+        float force = 0;
+        for (int i = scale; i < scaleForces.Length; i += RigidBodies3D.MaxScales)
+            force += scaleForces[i].y;
+        return force;
+    }
+
+    private int ScaleSlot(int scale)
+    {
+        if (scale < 0 || scale >= scaleSlots.Length || scaleSlots[scale] < 0)
+            throw new ArgumentException($"There is no scale {scale}.", nameof(scale));
+
+        return scaleSlots[scale];
     }
 
     private void CheckBodyId(int id)

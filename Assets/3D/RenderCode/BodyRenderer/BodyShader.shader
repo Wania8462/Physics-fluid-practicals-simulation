@@ -14,7 +14,8 @@ Shader "Custom/Body3D"
 
         StructuredBuffer<RigidBodyState> BodyStates;
         StructuredBuffer<RigidBodyProperties> BodyProperties;
-        uint drawShape;         // Shape of this draw's mesh, ShapeCube or ShapeSphere
+        uint drawShape;         // Shape of this draw's mesh, ShapeCube, ShapeSphere or ShapeScale
+        uint drawPart;          // For ShapeScale, 0 draws the base and 1 the pan
 
         struct v2f
         {
@@ -29,12 +30,17 @@ Shader "Custom/Body3D"
 
             // Bodies of the other shape get zero size, so all their vertices meet at one point and nothing is rasterised
             float visible = props.shape == drawShape;
-            float isCube = props.shape == ShapeCube;
-            float3 halfExtents = lerp(props.size.xxx, props.size.xyz, isCube) * visible;
+            float isBox = (props.shape == ShapeCube) + (props.shape == ShapeScale);
+            float3 halfExtents = lerp(props.size.xxx, props.size.xyz, isBox);
 
-            // The meshes are unit sized (cube edge 1, sphere diameter 1), so twice a vertex spans the half extents or radius.
+            // The cube and sphere meshes are unit sized (cube edge 1, sphere diameter 1), so twice a vertex spans the half
+            // extents or radius. The pan's cylinder has diameter 1 and height 2, and sits on top of the base
+            float isPan = drawPart == 1;
+            float3 meshScale = lerp(2 * halfExtents, float3(2 * ScalePanRadius, ScalePanHalfHeight, 2 * ScalePanRadius), isPan) * visible;
+            float3 offset = float3(0, props.size.y + ScalePanHalfHeight, 0) * isPan;
+
             // Positions are centres of mass, so the shape is shifted by the body-local centre of mass before rotating
-            float3 local = v.vertex.xyz * 2 * halfExtents - props.centerOfMass.xyz;
+            float3 local = v.vertex.xyz * meshScale + offset * visible - props.centerOfMass.xyz;
             float3 world = state.position.xyz + QuaternionRotate(state.rotation, local);
 
             v2f o;
