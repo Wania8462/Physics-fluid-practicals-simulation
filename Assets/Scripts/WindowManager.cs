@@ -135,20 +135,19 @@ public class WindowManager : MonoBehaviour
         };
     }
 
-    // The simulation's gravity points down as a negative number, the window shows its strength
     public void CreateGravityWindow()
     {
         Window window = CreateWindow("Gravity properties",
             new Field { 
                 name = "Gravity", 
                 fieldType = FieldType.Numeric, 
-                value = -api.GetGravity(), 
+                value = api.GetGravity(),
                 min = 0, 
                 max = 25, 
                 unit = "m/s²" 
             });
 
-        window.FieldChanged += _ => api.SetGravity(-window.fields[0].value);
+        window.FieldChanged += _ => api.SetGravity(window.fields[0].value);
     }
 
     // One toggle per BodyForce, then one for their values, starting as they are drawn now. The resultant is the sum of the

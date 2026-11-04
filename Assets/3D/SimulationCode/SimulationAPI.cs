@@ -33,12 +33,12 @@ public class SimulationAPI : MonoBehaviour
 
     public float GetGravity()
     {
-        return manager.settings.gravity / gravityScale;
+        return -manager.settings.gravity / gravityScale;
     }
 
     public void SetGravity(float gravity)
     {
-        manager.settings.gravity = gravity * gravityScale;
+        manager.settings.gravity = -gravity * gravityScale;
     }
 
     public float GetDensity()
