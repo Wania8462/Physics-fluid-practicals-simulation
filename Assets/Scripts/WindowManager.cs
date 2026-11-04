@@ -111,8 +111,22 @@ public class WindowManager : MonoBehaviour
     public void CreateFluidWindow()
     {
         Window window = CreateWindow("Fluid properties",
-            new Field { name = "Density", fieldType = FieldType.Numeric, value = api.GetDensity(), min = 500, max = 1500, unit = "kg/m³" },
-            new Field { name = "Viscosity", fieldType = FieldType.Numeric, value = api.GetViscosity(), min = 0, max = 5, unit = "mPa·s" });
+            new Field { 
+                name = "Density", 
+                fieldType = FieldType.Numeric, 
+                value = api.GetDensity(), 
+                min = 500, 
+                max = 1500, 
+                unit = "kg/m³" 
+            },
+            new Field { 
+                name = "Viscosity", 
+                fieldType = FieldType.Numeric, 
+                value = api.GetViscosity(), 
+                min = 0, 
+                max = 5, 
+                unit = "mPa·s" 
+            });
 
         window.FieldChanged += _ =>
         {
@@ -125,7 +139,14 @@ public class WindowManager : MonoBehaviour
     public void CreateGravityWindow()
     {
         Window window = CreateWindow("Gravity properties",
-            new Field { name = "Gravity", fieldType = FieldType.Numeric, value = -api.GetGravity(), min = 0, max = 25, unit = "m/s²" });
+            new Field { 
+                name = "Gravity", 
+                fieldType = FieldType.Numeric, 
+                value = -api.GetGravity(), 
+                min = 0, 
+                max = 25, 
+                unit = "m/s²" 
+            });
 
         window.FieldChanged += _ => api.SetGravity(-window.fields[0].value);
     }
