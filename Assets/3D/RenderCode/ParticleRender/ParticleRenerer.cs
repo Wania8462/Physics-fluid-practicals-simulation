@@ -1,6 +1,7 @@
 using Unity.Mathematics;
 using UnityEngine;
 
+/// <summary>How the particles are coloured</summary>
 enum ParticleColor3D
 {
     SolidBlue,
@@ -8,6 +9,7 @@ enum ParticleColor3D
     BlueToWhite
 }
 
+/// <summary>Draws the particles, and optionally the rigid bodies, as flat discs</summary>
 public class ParticleRenerer : MonoBehaviour
 {
     [SerializeField] private int particleQuality = 5;
@@ -32,6 +34,7 @@ public class ParticleRenerer : MonoBehaviour
 
     const int CalculateColorsKernelID = 0;
 
+    /// <summary>Binds the particle buffers. Runs whenever they are rebuilt</summary>
     public void Setup(SimulationManager sim)
     {
         mesh = mesh == null ? MeshGenerator.Circle(sim.particleRadius, particleQuality) : mesh;
@@ -59,7 +62,6 @@ public class ParticleRenerer : MonoBehaviour
         SetupBoundaryParticles(sim);
     }
 
-    // Rigid bodies are drawn as their boundary particles in a solid colour, like in the 2D renderer
     private void SetupBoundaryParticles(SimulationManager sim)
     {
         ComputeHelper.Release(boundaryCommandBuf);
@@ -81,12 +83,14 @@ public class ParticleRenerer : MonoBehaviour
         drawBoundaryParticles = true;
     }
 
+    /// <summary>Colours the particles and draws them</summary>
     public void DrawParticles()
     {
         compute.Dispatch(CalculateColorsKernelID, threadGroups);
         Graphics.RenderMeshIndirect(rp, mesh, commandBuf, commandCount: 1);
     }
 
+    /// <summary>Draws the rigid bodies as their boundary particles</summary>
     public void DrawBoundaryParticles()
     {
         if (drawBoundaryParticles)

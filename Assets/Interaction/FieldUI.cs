@@ -4,6 +4,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
+/// <summary>The UI of one window field</summary>
 public class FieldUI : MonoBehaviour
 {
     [SerializeField] private TMP_Text label;
@@ -18,6 +19,7 @@ public class FieldUI : MonoBehaviour
     private Field field;
     private int index;
 
+    /// <summary>Raised with the field's index and new value when the user edits it</summary>
     public event Action<int, Field> Changed;
 
     private void Awake()
@@ -28,13 +30,14 @@ public class FieldUI : MonoBehaviour
         toggle.onValueChanged.AddListener(OnToggleChanged);
     }
 
+    /// <summary>Shows a field. index is its position in the window</summary>
     public void Bind(Field field, int index)
     {
         this.field = field;
         this.index = index;
         label.text = field.name;
 
-        // A readout is the numeric field's top row, its value shown in the input field the user can't type into
+        // A readout looks like a numeric field the user can't type into
         bool numeric = field.fieldType == FieldType.Numeric;
         bool hasValue = numeric || field.fieldType == FieldType.Readout;
         input.gameObject.SetActive(hasValue);

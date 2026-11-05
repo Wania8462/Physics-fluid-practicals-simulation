@@ -3,14 +3,14 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Serialization;
 
-// The box the fluid is simulated in, centred on the origin
+/// <summary>The box the fluid is simulated in, centred on the origin</summary>
 public readonly struct Tank
 {
-    // Wall to wall
+    /// <summary>Wall to wall</summary>
     public readonly float3 size;
-    // Origin to wall
+    /// <summary>Origin to wall</summary>
     public readonly float3 halfSize;
-    // Origin to where a particle centre touches the wall
+    /// <summary>Origin to where a particle centre touches the wall</summary>
     public readonly float3 innerHalfSize;
 
     public Tank(float3 size, float particleRadius)
@@ -21,6 +21,7 @@ public readonly struct Tank
     }
 }
 
+/// <summary>Spawns the fluid particles and samples the rigid body surfaces</summary>
 public class Spawn3DParticles : MonoBehaviour
 {
     [Header("Spawn settings")]
@@ -34,24 +35,23 @@ public class Spawn3DParticles : MonoBehaviour
     [Tooltip("Space between the particle box and each tank wall")]
     [SerializeField, FormerlySerializedAs("boundingBoxSizeOffset")] private float3 tankPadding = new(40, 40, 40);
 
-    // The solver rests the fluid at this spacing
+    /// <summary>Distance between spawned particles, which the fluid rests at</summary>
     public float Spacing => spacing;
 
     private int3 ParticlesPerAxis => math.max(1, (int3)math.floor(particleBoxSize / spacing));
 
     public int GetNumberOfParticles() => ParticlesPerAxis.x * ParticlesPerAxis.y * ParticlesPerAxis.z;
 
+    /// <summary>A grid of fluid particles filling the spawn box, slightly jittered</summary>
     public float4[] InitializePositions()
     {
-        // The tank is centred on the origin and reaches tankPadding past the box, so a centre further out than that
-        // pokes the box through a wall
+        // Warn if the spawn box sticks out of the tank
         if (math.any(math.abs(center) > tankPadding))
             Debug.LogWarning($"Spawn particles: the particle box at {center} sticks out of the tank");
 
         int3 n = ParticlesPerAxis;
         float4[] pos = new float4[n.x * n.y * n.z];
         float jitter = useJitter ? jitterStrength : 0;
-        // Centre of the first cell, so the lattice sits centred on center
         float3 start = center - (float3)(n - 1) * spacing / 2;
 
         for (int i = 0; i < n.x; i++)
@@ -79,8 +79,7 @@ public class Spawn3DParticles : MonoBehaviour
 
     private float3 TankSize => particleBoxSize + tankPadding * 2;
 
-    // Boundary particles on the surface of a cube centred on the origin: the points of a lattice spaced about
-    // sampleDensity apart that lie on a face. 3D counterpart of the 2D InitRectangleOutlinePositions
+    /// <summary>Evenly spaced points on a cube's surface</summary>
     public float3[] InitCubeSurfacePositions(float halfSize, float sampleDensity)
     {
         int cellsPerEdge = Mathf.Max(1, Mathf.CeilToInt(2 * halfSize / sampleDensity));
@@ -103,8 +102,7 @@ public class Spawn3DParticles : MonoBehaviour
         return positions.ToArray();
     }
 
-    // Boundary particles on the surface of a sphere centred on the origin: a Fibonacci spiral with one particle per
-    // sampleDensity^2 of area. 3D counterpart of the 2D InitCircleOutlinePositions
+    /// <summary>Evenly spread points on a sphere (Fibonacci spiral)</summary>
     public float3[] InitSphereSurfacePositions(float radius, float sampleDensity)
     {
         int count = Mathf.CeilToInt(4 * math.PI * radius * radius / (sampleDensity * sampleDensity));
@@ -129,9 +127,7 @@ public class Spawn3DParticles : MonoBehaviour
         return positions;
     }
 
-    // Boundary particles on the surface of a scale centred on its base: the base box's faces as a lattice spaced about
-    // sampleDensity apart, then the pan's side and top as rings. The base's top under the pan and the pan's bottom are
-    // inside the scale, so they are left out
+    /// <summary>Points on a scale's surface, leaving out the parts hidden inside it</summary>
     public float3[] InitScaleSurfacePositions(float3 halfExtents, float panRadius, float panHalfHeight, float sampleDensity)
     {
         int3 cells = math.max(1, (int3)math.ceil(2 * halfExtents / sampleDensity));
@@ -154,7 +150,7 @@ public class Spawn3DParticles : MonoBehaviour
             }
         }
 
-        // The side's top ring is the rim of the top, so the top's rings start inside it
+        // Rings around the pan's side, then rings across its top
         int sideLevels = Mathf.Max(1, Mathf.CeilToInt(2 * panHalfHeight / sampleDensity));
         for (int level = 0; level <= sideLevels; level++)
             AddRing(positions, panRadius, halfExtents.y + 2 * panHalfHeight * level / sideLevels, sampleDensity);
@@ -166,7 +162,7 @@ public class Spawn3DParticles : MonoBehaviour
         return positions.ToArray();
     }
 
-    // Points about sampleDensity apart around a horizontal circle, one point for a radius of 0
+    /// <summary>Evenly spaced points around a horizontal circle</summary>
     private static void AddRing(List<float3> positions, float radius, float y, float sampleDensity)
     {
         int count = Mathf.Max(1, Mathf.CeilToInt(2 * math.PI * radius / sampleDensity));
@@ -177,6 +173,7 @@ public class Spawn3DParticles : MonoBehaviour
         }
     }
 
+    /// <summary>The tank around the spawn box</summary>
     public Tank GetTank(float particleRadius)
     {
         float3 size = TankSize;

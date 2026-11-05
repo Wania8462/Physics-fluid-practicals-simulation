@@ -2,67 +2,73 @@ using System;
 using Unity.Mathematics;
 using UnityEngine;
 
-// Real units: m/s², kg/m³, mPa·s, m³ and kg
+/// <summary>The UI's way into the simulation, in real units: m/s², kg/m³, mPa·s, m³ and kg</summary>
 public class SimulationAPI : MonoBehaviour
 {
     private const float BodySampleDensity = 1;
-    private const float SpawnDistance = 0.6f;   // Of the tank's largest side, in front of the camera
+    private const float SpawnDistance = 0.6f;  // Of the tank's largest side, in front of the camera
 
     [SerializeField] private SimulationManager manager;
 
-    // ponytail: hand-picked so the 3DSandbox values read as water on Earth, not measured. Each scale maps one quantity on
-    // its own, so together they aren't a consistent unit system. Calibrate them against what the practicals should show
+    // ponytail: hand-picked to look like water on Earth, not measured
     [Header("Unit scales")]
-    [SerializeField] private float lengthScale = 200;           // Sim units per metre, the 250 unit tank is 1.25 m wide
-    [SerializeField] private float densityScale = 1f / 1000;    // restDensity (sim mass per sim unit³) per kg/m³, 1 is water
-    [SerializeField] private float gravityScale = 20 / 9.81f;   // Sim gravity per m/s², -20 is Earth
-    [SerializeField] private float viscosityScale = 1;          // lowViscosity per mPa·s, 1 is water
+    [SerializeField] private float lengthScale = 200;          // Sim units per metre
+    [SerializeField] private float densityScale = 1f / 1000;   // restDensity per kg/m³
+    [SerializeField] private float gravityScale = 20 / 9.81f;  // Sim gravity per m/s²
+    [SerializeField] private float viscosityScale = 1;         // lowViscosity per mPa·s
 
-    // Sim mass of 1 kg. restDensity is sim mass per sim unit³ and each fluid particle weighs restDensity * spacing³, so a
-    // body as dense as the fluid weighs as much as the particles it displaces. An ice cube floating about 92% under is
-    // the check
+    /// <summary>Sim mass of 1 kg</summary>
     private float MassScale => densityScale * math.pow(lengthScale, 3);
 
-    // Sim force of 1 N. Accelerations are scaled like gravity, so a body's weight comes out as m g
+    /// <summary>Sim force of 1 N</summary>
     public float ForceScale => MassScale * gravityScale;
 
+    /// <summary>Pauses or resumes the simulation</summary>
     public void SetPaused(bool paused)
     {
         manager.paused = paused;
     }
 
+    /// <summary>Gravity in m/s², positive downwards</summary>
     public float GetGravity()
     {
         return -manager.settings.gravity / gravityScale;
     }
 
+    /// <summary>Sets gravity in m/s², positive downwards</summary>
     public void SetGravity(float gravity)
     {
         manager.settings.gravity = -gravity * gravityScale;
     }
 
+    /// <summary>Fluid density in kg/m³</summary>
     public float GetDensity()
     {
         return manager.settings.restDensity / densityScale;
     }
 
+    /// <summary>Sets the fluid density in kg/m³</summary>
     public void SetDensity(float density)
     {
         manager.settings.restDensity = density * densityScale;
     }
 
+    /// <summary>Fluid viscosity in mPa·s</summary>
     public float GetViscosity()
     {
         return manager.settings.lowViscosity / viscosityScale;
     }
 
+    /// <summary>Sets the fluid viscosity in mPa·s</summary>
     public void SetViscosity(float viscosity)
     {
         manager.settings.lowViscosity = viscosity * viscosityScale;
     }
 
-    // Places the body 60% of the tank's largest side in front of the camera, pushed back inside the tank if that spot
-    // isn't, and returns its id
+    /// <summary>Spawns a body in front of the camera, inside the tank</summary>
+    /// <param name="volume">In m³</param>
+    /// <param name="mass">In kg</param>
+    /// <returns>The body's id</returns>
     public int AddBody(BodyShape3D shape, float volume, float mass)
     {
         float radius = ToSimRadius(shape, volume);
@@ -74,7 +80,6 @@ public class SimulationAPI : MonoBehaviour
         if (math.any(radius > tank.innerHalfSize))
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The body has to fit inside the tank.");
 
-        // The simulation runs in world space, and a body that isn't rotated reaches radius along each axis
         Transform camera = Camera.main.transform;
         float3 position = (float3)camera.position + (float3)camera.forward * (SpawnDistance * math.cmax(tank.size));
         float3 limit = tank.innerHalfSize - radius;
@@ -89,6 +94,8 @@ public class SimulationAPI : MonoBehaviour
         });
     }
 
+    /// <summary>Changes a body's mass</summary>
+    /// <param name="mass">In kg</param>
     public void SetBodyMass(int id, float mass)
     {
         if (mass <= 0)
@@ -97,19 +104,21 @@ public class SimulationAPI : MonoBehaviour
         manager.SetBodyMass(id, mass * MassScale);
     }
 
-    // Rebuilds the body with a new shape or volume where it is now
+    /// <summary>Rebuilds a body with a new shape or volume where it is now</summary>
+    /// <param name="volume">In m³</param>
     public void SetBodyShape(int id, BodyShape3D shape, float volume)
     {
         manager.ReshapeBody(id, shape, ToSimRadius(shape, volume));
     }
 
+    /// <summary>Removes a body</summary>
     public void RemoveBody(int id)
     {
         manager.RemoveBody(id);
     }
 
-    // Scales are numbered 0 to RigidBodies3D.MaxScales - 1. Neither the fluid nor the bodies move them, only MoveScale.
-    // A new one goes where AddBody puts bodies
+    /// <summary>Places a scale in front of the camera</summary>
+    /// <param name="scale">0 to RigidBodies3D.MaxScales - 1</param>
     public void AddScale(int scale)
     {
         if (scale < 0 || scale >= RigidBodies3D.MaxScales)
@@ -128,18 +137,19 @@ public class SimulationAPI : MonoBehaviour
         });
     }
 
+    /// <summary>Removes a scale</summary>
     public void RemoveScale(int scale)
     {
         manager.RemoveScale(scale);
     }
 
-    // Moves the scale to the position, or as close as it fits inside the tank. The position is the base's centre
+    /// <summary>The position is the base's centre, clamped inside the tank</summary>
     public void MoveScale(int scale, Vector3 position)
     {
         manager.MoveScale(scale, ClampScale(position));
     }
 
-    // The base's centre
+    /// <summary>Centre of the scale's base</summary>
     public Vector3 GetScalePosition(int scale)
     {
         if (!manager.TryGetScalePosition(scale, out Vector3 position))
@@ -148,7 +158,7 @@ public class SimulationAPI : MonoBehaviour
         return position;
     }
 
-    // The base and the pan
+    /// <summary>Box around the scale's base and pan</summary>
     public Bounds GetScaleBounds(int scale)
     {
         Vector3 position = GetScalePosition(scale);
@@ -158,19 +168,19 @@ public class SimulationAPI : MonoBehaviour
         return bounds;
     }
 
-    // In N, how hard the bodies on the scale push it, so in fluid it reads their weight minus their buoyancy
+    /// <summary>In N. In fluid it reads the bodies' weight minus their buoyancy</summary>
     public float GetScaleReading(int scale)
     {
         return manager.ScaleForce(scale) / ForceScale;
     }
 
-    // While true, right mouse doesn't pull the bodies, so dragging a scale doesn't drag them along
+    /// <summary>While true, right mouse doesn't pull the bodies, so dragging a scale doesn't drag them along</summary>
     public void SetDraggingScale(bool dragging)
     {
         manager.draggingScale = dragging;
     }
 
-    // The whole scale, base and pan, inside the tank, with the base centred on the position
+    /// <summary>Keeps the whole scale inside the tank</summary>
     private float3 ClampScale(float3 position)
     {
         float3 halfExtents = RigidBodies3D.ScaleHalfExtents;
@@ -180,6 +190,7 @@ public class SimulationAPI : MonoBehaviour
         return math.clamp(position, min, max);
     }
 
+    /// <summary>Turns a volume in m³ into a sim body radius</summary>
     private float ToSimRadius(BodyShape3D shape, float volume)
     {
         if (volume <= 0)

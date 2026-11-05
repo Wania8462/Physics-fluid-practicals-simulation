@@ -1,12 +1,12 @@
+// Positions and velocities are float4 with w unused, for GPU alignment
+
 #define PI 3.14159265359
 
 float Distance(float4 p1, float4 p2);
 float DistanceSq(float4 p1, float4 p2);
 float Pow3(float x);
 
-// Positions and velocities are float4 with w = 0 (16 byte GPU alignment),
-// only xyz carries simulation data
-
+// Velocity change from viscosity between two particles
 float4 ViscosityImpulse(float deltaTime, float highViscosity, float lowViscosity, float relativeDistance, float inwardVelocity, float4 unitVector)
 {
     return deltaTime *
@@ -25,21 +25,20 @@ float4 UnitVector(float4 initialVector, float4 finalVector, float distance)
     return (finalVector - initialVector) / distance;
 }
 
-// Poly6 density kernel, normalised so it integrates to 1. factor = 315 / (64π h⁹). Zero beyond the radius
+// Smoothing kernel for density: largest at the centre, zero at the radius
 float Poly6(float distanceSq, float radiusSq, float factor)
 {
     return factor * Pow3(max(radiusSq - distanceSq, 0.0));
 }
 
-// Gradient of the spiky kernel with respect to the particle, which points towards the neighbour. factor = 45 / (π h⁶)
+// Direction and strength of the push between two particles
 float4 SpikyGradient(float distance, float radius, float factor, float4 towardsNeighbour)
 {
     float overlap = radius - distance;
     return factor * overlap * overlap * towardsNeighbour;
 }
 
-// Density a wall adds when everything beyond it counts as fluid at rest: the Poly6 kernel integrated over the half
-// space past the wall. x is the distance to the wall over the radius, clamped to [0, 1]. 0.5 at the wall, 0 at x = 1
+// Density a wall adds to a nearby particle, as if there were fluid beyond it
 float3 WallDensity(float3 x)
 {
     float3 x2 = x * x;
@@ -47,7 +46,7 @@ float3 WallDensity(float3 x)
     return 0.5 - 315.0 / 256.0 * integral;
 }
 
-// How fast WallDensity grows as a particle moves towards the wall
+// How that wall density changes as the particle moves towards the wall
 float3 WallDensityGradient(float3 x, float radius)
 {
     float3 y = 1.0 - x * x;

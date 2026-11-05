@@ -1,10 +1,9 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 
-// Draws every rigid body as a lit, opaque cube, sphere or scale, posed in the vertex shader straight from the body buffers
+/// <summary>Draws every rigid body as a solid cube, sphere or scale</summary>
 public class BodyRenderer : MonoBehaviour
 {
-    // Name of Custom/Body3D's depth-only pass
     private const string DepthPassName = "DepthOnly";
 
     [Tooltip("Unit cube, edge length 1, such as Unity's built-in Cube")]
@@ -27,9 +26,7 @@ public class BodyRenderer : MonoBehaviour
     private RenderParams scalePanRp;
     private int depthPass;
 
-    // The body buffers are packed, or hold one all-zero body when there are none, which collapses to a point.
-    // Each draw covers every body and the shader collapses the bodies of the other shape. A scale is two draws, its
-    // base as a cube and its pan as a cylinder
+    /// <summary>One draw per shape, each covering every body. A scale is two draws, base and pan</summary>
     public void Setup(SimulationManager sim)
     {
         cubeRp = SetupDraw(sim, cubeMesh, BodyShape3D.Cube, 0, ref cubeCommandBuf);
@@ -37,13 +34,13 @@ public class BodyRenderer : MonoBehaviour
         scaleBaseRp = SetupDraw(sim, cubeMesh, BodyShape3D.Scale, 0, ref scaleBaseCommandBuf);
         scalePanRp = SetupDraw(sim, cylinderMesh, BodyShape3D.Scale, 1, ref scalePanCommandBuf);
 
-        // Checked after the draws are set up, so the bodies still draw with a shader that lacks the pass
         depthPass = material.FindPass(DepthPassName);
         if (depthPass < 0)
             throw new System.InvalidOperationException($"{material.shader.name} has no {DepthPassName} pass, so the screen-space fluid can't be hidden behind bodies");
     }
 
-    // part is drawPart in Custom/Body3D, for scales 0 is the base and 1 the pan
+    /// <summary>One draw covering every body of a shape</summary>
+    /// <param name="part">For scales, 0 draws the base and 1 the pan</param>
     private RenderParams SetupDraw(SimulationManager sim, Mesh mesh, BodyShape3D shape, int part, ref GraphicsBuffer commandBuf)
     {
         ComputeHelper.Release(commandBuf);
@@ -58,6 +55,7 @@ public class BodyRenderer : MonoBehaviour
         return rp;
     }
 
+    /// <summary>Draws every body, lit</summary>
     public void DrawBodies()
     {
         Draw(cubeRp, cubeMesh, cubeCommandBuf);
@@ -66,8 +64,7 @@ public class BodyRenderer : MonoBehaviour
         Draw(scalePanRp, cylinderMesh, scalePanCommandBuf);
     }
 
-    // Draws every body into the current depth buffer only, with the same buffers and properties as DrawBodies.
-    // The screen-space fluid renderer uses it so bodies hide the fluid behind them
+    /// <summary>Depth only, so bodies hide the screen-space fluid behind them</summary>
     public void DrawDepth(CommandBuffer cmd)
     {
         cmd.DrawMeshInstancedIndirect(cubeMesh, 0, material, depthPass, cubeCommandBuf, 0, cubeRp.matProps);
@@ -76,7 +73,6 @@ public class BodyRenderer : MonoBehaviour
         cmd.DrawMeshInstancedIndirect(cylinderMesh, 0, material, depthPass, scalePanCommandBuf, 0, scalePanRp.matProps);
     }
 
-    // Colour is set every frame so inspector changes show while playing. The light direction is a global set by RenderManager
     private void Draw(RenderParams rp, Mesh mesh, GraphicsBuffer commandBuf)
     {
         rp.matProps.SetColor("color", color);

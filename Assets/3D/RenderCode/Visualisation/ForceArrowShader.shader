@@ -2,9 +2,7 @@ Shader "Custom/ForceArrow3D"
 {
     SubShader
     {
-        // Visualiser draws it after everything else the camera renders, the fluid included, and without depth, so arrows
-        // inside bodies or water still show. The arrow mesh orders its triangles so that, with back faces culled, it
-        // covers itself correctly
+        // Drawn on top of everything, so arrows show inside bodies and fluid
         Tags { "Queue"="Overlay" "RenderType"="Opaque" }
 
         Pass
@@ -23,22 +21,21 @@ Shader "Custom/ForceArrow3D"
 
             #define UNITY_INDIRECT_DRAW_ARGS IndirectDrawIndexedArgs
 
-            // Arrows per body: the BodyForceCount forces, then their resultant, matching BodyForce in Visualiser.cs
+            // The forces, then their resultant, matching BodyForce in Visualiser.cs
             #define ArrowsPerBody 4
             static const uint ResultantArrow = 3;
 
-            // Share of the colour faces turned away from the light keep
             static const float ambient = 0.3;
 
             StructuredBuffer<RigidBodyState> BodyStates;
             StructuredBuffer<float4> BodyForces;
-            uint shownForces;       // Bit i is set when BodyForce i is drawn
-            float arrowScale;       // Arrow length per sim unit of force
-            float maxArrowLength;   // Longer arrows are cut to this, so they stay on screen
+            uint shownForces;       // Bit i set when BodyForce i is drawn
+            float arrowScale;
+            float maxArrowLength;
             float width;            // Head radius, the shaft is half as wide
             float headLength;
             float4 colors[ArrowsPerBody];
-            float3 lightDirection;  // Direction the light travels in, a global set by RenderManager
+            float3 lightDirection;  // Global, set by RenderManager
 
             struct v2f
             {
@@ -56,16 +53,16 @@ Shader "Custom/ForceArrow3D"
                 for (uint f = 0; f < BodyForceCount; f++)
                     force += BodyForces[body * BodyForceCount + f].xyz * (f == arrow || arrow == ResultantArrow);
 
-                // Hidden arrows and zero forces get zero size, so all their vertices meet at one point and nothing is rasterised
+                // Hidden arrows get zero length
                 float magnitude = length(force);
                 float arrowLength = min(magnitude * arrowScale, maxArrowLength) * ((shownForces >> arrow) & 1);
 
-                // An arrow shorter than its head is all head, scaled down so it keeps its shape
+                // An arrow shorter than its head is all head
                 float head = min(headLength, arrowLength);
                 float radius = width * head / headLength;
                 float along = v.vertex.y * (arrowLength - head) + v.texcoord.y * head;
 
-                // The mesh's y follows the force. front = side x axis keeps the mesh's handedness, so its triangles stay clockwise
+                // Point the mesh along the force
                 float3 axis = magnitude > 1e-9 ? force / magnitude : float3(0, 1, 0);
                 float3 side = normalize(cross(abs(axis.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0), axis));
                 float3 front = cross(side, axis);

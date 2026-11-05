@@ -1,9 +1,12 @@
 using Unity.Mathematics;
 using UnityEngine;
 
+/// <summary>Grid of cubic cells over the tank, for neighbour search</summary>
 public class SPValues3D
 {
+    /// <summary>Corner of the grid</summary>
     public float3 offset;
+    /// <summary>Edge length of a cell</summary>
     public float length;
     public int columns;
     public int rows;

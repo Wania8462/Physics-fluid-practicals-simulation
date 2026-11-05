@@ -2,6 +2,7 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+/// <summary>How the screen-space fluid looks</summary>
 [Serializable]
 public struct ScreenSpaceFluidSettings
 {
@@ -35,11 +36,10 @@ public struct ScreenSpaceFluidSettings
     public float thicknessDisplayScale;
 }
 
-// Draws the fluid as one smooth surface instead of billboards. Particles are drawn as spheres into eye-depth and
-// thickness textures, which are smoothed and then shaded over a copy of the scene by a full-screen pass. The commands are
-// re-recorded every frame into one command buffer that the camera runs after transparent objects
+/// <summary>Draws the fluid as one smooth, see-through surface instead of separate particles</summary>
 public class ScreenSpaceFluidRenderer : MonoBehaviour
 {
+    /// <summary>What the final pass shows: the shaded fluid, or one stage of it</summary>
     public enum DebugView
     {
         Composite,
@@ -50,10 +50,9 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         SmoothThickness
     }
 
-    // Eye depth where there is no fluid, FLUID_NO_DEPTH in FluidCommon.hlsl
+    /// <summary>Matches FLUID_NO_DEPTH in FluidCommon.hlsl</summary>
     public const float NoDepth = 1e7f;
 
-    // Names of the passes in FluidParticles.shader, FluidSmooth.shader and FluidComposite.shader
     private const string DepthPassName = "Depth";
     private const string ThicknessPassName = "Thickness";
     private const string BilateralHPassName = "BilateralH";
@@ -77,7 +76,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private static readonly int FluidInvProjId = Shader.PropertyToID("_FluidInvProj");
     private static readonly int FluidCamToWorldId = Shader.PropertyToID("_FluidCamToWorld");
 
-    // Temporary render textures. Each is also a global texture of the same name, which is how the shaders read it
+    /// <summary>Temporary textures, read by the shaders by name</summary>
     private static readonly int FluidDepthTexId = Shader.PropertyToID("_FluidDepthTex");
     private static readonly int FluidDepthTempId = Shader.PropertyToID("_FluidDepthTemp");
     private static readonly int FluidThicknessTexId = Shader.PropertyToID("_FluidThicknessTex");
@@ -123,9 +122,10 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private int numParticles;
     private BodyRenderer bodyRenderer;
 
+    /// <summary>Creates the materials and binds the particle positions</summary>
     public void Setup(SimulationManager sim, BodyRenderer bodyRenderer)
     {
-        // Camera.AddCommandBuffer does nothing under a scriptable render pipeline, so the fluid would silently not draw
+        // Only works in the Built-in Render Pipeline
         if (GraphicsSettings.currentRenderPipeline != null)
             throw new InvalidOperationException($"it needs the Built-in Render Pipeline, but {GraphicsSettings.currentRenderPipeline.name} is active");
 
@@ -148,8 +148,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         this.bodyRenderer = bodyRenderer;
     }
 
-    // Records this frame's commands. No camera matrices are recorded: the draws use the camera's own matrices when the
-    // buffer runs, because the camera can still move this frame after the simulation raises StepFinished
+    /// <summary>Records this frame's fluid rendering commands</summary>
     public void Draw()
     {
         particleMaterial.SetFloat(ParticleRenderRadiusId, settings.particleRenderRadius);
@@ -165,7 +164,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
         cmd.Clear();
 
-        // Every draw comes before the first Blit, because Blit replaces the camera's projection matrix with its own
+        // Depth of the nearest fluid surface at each pixel
         cmd.BeginSample("SSF Depth");
         cmd.GetTemporaryRT(FluidDepthTexId, -1, -1, 24, FilterMode.Point, RenderTextureFormat.RGFloat);
         cmd.SetRenderTarget(FluidDepthTexId);
@@ -174,9 +173,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, depthPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Depth");
 
-        // Half resolution (-2 is half the camera size): thickness varies smoothly, so a quarter of the pixels loses little
-        // and saves most of the additive overdraw. The bodies go into this target's own depth buffer too, or fluid behind a
-        // body would add to the thickness of the fluid in front of it
+        // How much fluid each pixel looks through, at half resolution to save time
         cmd.BeginSample("SSF Thickness");
         cmd.GetTemporaryRT(FluidThicknessTexId, -2, -2, 24, FilterMode.Bilinear, RenderTextureFormat.RHalf);
         cmd.SetRenderTarget(FluidThicknessTexId);
@@ -185,9 +182,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, thicknessPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Thickness");
 
-        // Each iteration blurs horizontally into the temporary and vertically back, so the result ends in _FluidDepthTex.
-        // The full-screen passes read their sources by name, not through Blit's _MainTex, which gave FluidSmooth's passes
-        // scene colours in Play mode. Blit still provides the target and the full-screen quad
+        // Smooth the depth so the particles blend into one surface
         cmd.BeginSample("SSF Smooth depth");
         cmd.GetTemporaryRT(FluidDepthTempId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.RGFloat);
         for (int i = 0; i < settings.smoothingIterations; i++)
@@ -198,7 +193,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidDepthTempId);
         cmd.EndSample("SSF Smooth depth");
 
-        // Skipped in the Thickness view, which shows thickness before smoothing
         if (settings.debugView != DebugView.Thickness)
         {
             cmd.BeginSample("SSF Smooth thickness");
@@ -209,7 +203,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
             cmd.EndSample("SSF Smooth thickness");
         }
 
-        // The composite reads the scene behind the fluid, so the camera target is copied before being drawn over
+        // Shade the fluid over a copy of the scene
         cmd.BeginSample("SSF Composite");
         cmd.GetTemporaryRT(FluidSceneTexId, -1, -1, 0, FilterMode.Bilinear, RenderTextureFormat.DefaultHDR);
         cmd.Blit(BuiltinRenderTextureType.CameraTarget, FluidSceneTexId);
@@ -221,8 +215,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidSceneTexId);
     }
 
-    // Blit passes can't use Unity's camera matrices, so the ones they need are set as globals right before this camera
-    // renders, after everything that moves it this frame has run
+    /// <summary>Gives the full-screen passes the camera matrices, which Blit hides from them</summary>
     private void SetCameraGlobals(Camera camera)
     {
         if (camera != cam)
@@ -234,7 +227,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         Shader.SetGlobalMatrix(FluidCamToWorldId, cam.cameraToWorldMatrix);
     }
 
-    // A misspelt name gives -1, which would draw every pass of the shader
+    /// <summary>Throws on a misspelt pass name instead of drawing every pass</summary>
     private static int FindPass(Material material, string name)
     {
         int pass = material.FindPass(name);
@@ -243,7 +236,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         return pass;
     }
 
-    // RenderManager enables this only in screen-space mode, so billboard mode has no command buffer on the camera
     private void OnEnable()
     {
         cmd = new CommandBuffer { name = "Screen Space Fluid" };
@@ -252,7 +244,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         Camera.onPreRender += SetCameraGlobals;
     }
 
-    // Also runs before the object is destroyed and before scripts reload, so the buffer is always released
     private void OnDisable()
     {
         Camera.onPreRender -= SetCameraGlobals;

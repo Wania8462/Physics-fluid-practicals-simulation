@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 
+/// <summary>Fly camera: WASD moves, Q and E go down and up, Shift is faster, Escape frees the cursor</summary>
 public class CameraController : MonoBehaviour
 {
     [SerializeField] private Transform cam;
@@ -20,6 +21,7 @@ public class CameraController : MonoBehaviour
         pitch = angles.x;
     }
 
+    /// <summary>Locks and hides the cursor while the mouse steers the camera</summary>
     void SetCameraMode(bool on)
     {
         cameraMode = on;

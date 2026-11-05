@@ -3,6 +3,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
+/// <summary>Editor menu item that counts the lines of code in Assets</summary>
 public static class CountLines
 {
     [MenuItem("Tools/Count lines")]

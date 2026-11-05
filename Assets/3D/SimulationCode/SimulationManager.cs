@@ -7,6 +7,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
 
+/// <summary>Simulation settings shown in the inspector</summary>
 [Serializable]
 public struct SimulationSettings3D
 {
@@ -20,7 +21,7 @@ public struct SimulationSettings3D
     [Header("Density")]
     [Tooltip("PBF iterations per step. More keeps deep fluid less compressed")]
     public int solverIterations;
-    // ponytail: the stable range depends on spacing and interactionRadius, recompute it if either changes
+    // ponytail: the safe value depends on spacing and interactionRadius, retune it if they change
     [Tooltip("Softens the density constraint. Below about 0.02 (spacing 3, radius 6) the solver overshoots and the fluid blows apart, higher is springier")]
     public float relaxation;
     [Tooltip("Strength k of the s_corr term that keeps particles from clumping, 0.1 in the PBF paper")]
@@ -38,6 +39,7 @@ public struct SimulationSettings3D
     public RigidBodySettings3D[] bodies;
 }
 
+/// <summary>Runs the fluid and rigid body simulation on the GPU</summary>
 public class SimulationManager : MonoBehaviour
 {
     [Header("Simulation settings")]
@@ -55,31 +57,30 @@ public class SimulationManager : MonoBehaviour
     [SerializeField] private Spawn3DParticles spawn;
     private SPValues3D SP;
 
-    // Renderers are in an assembly that references this one, so they subscribe here instead of being called
-    // Raised after Setup or a body change rebuilds the buffers
+    /// <summary>Raised when the buffers are rebuilt, so the renderers can rebind them</summary>
     public event Action<SimulationManager> BuffersChanged;
-    // Raised at the end of every Update, paused or not, because draws have to be submitted each frame
+    /// <summary>Raised every frame, even when paused, so the renderers draw</summary>
     public event Action StepFinished;
 
     [HideInInspector] public int numParticles;
     [HideInInspector] public int numBoundaryParticles;
     public float InteractionRadius => settings.interactionRadius;
+    /// <summary>The tank the fluid is simulated in</summary>
     public Tank Tank => spawn.GetTank(particleRadius);
 
     private Dictionary<string, int> KernelIDs;
+    /// <summary>Every GPU buffer, by its name in Simulation.compute</summary>
     public Dictionary<string, ComputeBuffer> Buffers = new();
 
     private RigidBodyData3D bodies;
     private int numBodies;
 
-    // Body buffers that AddBody or RemoveBody replaced, released at the start of the next Update
+    /// <summary>Old body buffers, released next frame once nothing is drawing with them</summary>
     private readonly List<ComputeBuffer> replacedBuffers = new();
 
-    // The settings.bodies slot of each scale, -1 for a scale that isn't there
+    /// <summary>Which body slot each scale uses, -1 if it isn't placed</summary>
     private readonly int[] scaleSlots = Enumerable.Repeat(-1, RigidBodies3D.MaxScales).ToArray();
-    // The last BodyScaleForces read back, a frame or two behind the GPU
     private Vector4[] scaleForces;
-    // While the user drags a scale, right mouse doesn't also pull the bodies
     internal bool draggingScale;
 
     private int3 threadGroups;
@@ -92,7 +93,7 @@ public class SimulationManager : MonoBehaviour
         Setup();
     }
 
-    // Keys typed into a text box, such as a window being renamed, aren't hotkeys
+    /// <summary>Whether the user is typing in a text field, so keys aren't hotkeys</summary>
     private static bool Typing()
     {
         GameObject selected = EventSystem.current ? EventSystem.current.currentSelectedGameObject : null;
@@ -106,8 +107,6 @@ public class SimulationManager : MonoBehaviour
         if (hotkeys && Input.GetKeyDown(KeyCode.R))
             Setup();
 
-        // Draws queued before AddBody or RemoveBody may use the buffers they replaced until that frame has rendered, so
-        // the buffers are released here, before this frame's draws, and the renderer switches to the new ones
         if (replacedBuffers.Count > 0)
         {
             foreach (ComputeBuffer buffer in replacedBuffers)
@@ -131,7 +130,6 @@ public class SimulationManager : MonoBehaviour
 
         UpdateComputeSettings();
 
-        // Async, so the GPU isn't stalled
         if (scaleSlots.Any(slot => slot >= 0))
             AsyncGPUReadback.Request(Buffers["BodyScaleForces"], request => { if (!request.hasError) scaleForces = request.GetData<Vector4>().ToArray(); });
 
@@ -143,6 +141,7 @@ public class SimulationManager : MonoBehaviour
         Watcher.ExecuteWithTimer("1. Time step", SimulationStep);
     }
 
+    /// <summary>One step: forces and viscosity, the PBF solver with the bodies, then body contacts</summary>
     private void SimulationStep()
     {
         float dt = useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
@@ -150,7 +149,6 @@ public class SimulationManager : MonoBehaviour
 
         compute.Dispatch(KernelIDs["ExternalForces"], threadGroups);
 
-        // Viscosity reads the grid built from last step's predicted positions, which the solve has only nudged since
         compute.Dispatch(KernelIDs["ClearForceBuffers"], threadGroups);
         compute.Dispatch(KernelIDs["ApplyViscosity"], threadGroups);
         compute.Dispatch(KernelIDs["ApplyForceBuffersToVelocities"], threadGroups);
@@ -163,12 +161,10 @@ public class SimulationManager : MonoBehaviour
             compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
         }
 
-        // PBF needs every neighbour of the predicted positions, so the grids are rebuilt every step
         BuildGrid();
         if (numBodies > 0)
             BuildBoundaryGrid();
 
-        // The bodies are moved by the fluid inside every iteration, so they and the fluid settle together
         for (int i = 0; i < settings.solverIterations; i++)
         {
             compute.Dispatch(KernelIDs["CalculateLambdas"], threadGroups);
@@ -208,7 +204,7 @@ public class SimulationManager : MonoBehaviour
             compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
             compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
 
-            // Exponential, so the easing takes the same time whatever dt is
+            // Same smoothing speed whatever the frame rate
             compute.SetFloat("forceSmoothing", 1 - Mathf.Exp(-dt / forceSmoothingTime));
             DispatchPerBody("SmoothBodyForces");
         }
@@ -218,8 +214,7 @@ public class SimulationManager : MonoBehaviour
         compute.Dispatch(KernelIDs["CalculateVelocity"], threadGroups);
     }
 
-    // Counting sort: count per cell, prefix sum the counts into start offsets, then
-    // scatter. Leaves cell c's particles in SortedIndices[CellStart[c]..CellStart[c + 1])
+    /// <summary>Sorts particles into grid cells for neighbour search</summary>
     private void BuildGrid()
     {
         compute.Dispatch(KernelIDs["ClearGrid"], gridThreadGroups);
@@ -236,7 +231,7 @@ public class SimulationManager : MonoBehaviour
         compute.Dispatch(KernelIDs["Scatter"], threadGroups);
     }
 
-    // The same counting sort for the boundary particles, into BoundaryCellStart and BoundarySortedIndices
+    /// <summary>Sorts the boundary particles into grid cells</summary>
     private void BuildBoundaryGrid()
     {
         compute.Dispatch(KernelIDs["ClearBoundaryGrid"], gridThreadGroups);
@@ -253,7 +248,7 @@ public class SimulationManager : MonoBehaviour
         compute.Dispatch(KernelIDs["ScatterBoundary"], boundaryThreadGroups);
     }
 
-    // Body kernels run one thread group per body; the Sum* kernels have BodyReductionThreads threads in each group
+    /// <summary>Runs a body kernel with one thread group per body</summary>
     private void DispatchPerBody(string kernel) => compute.Dispatch(KernelIDs[kernel], numBodies, 1, 1);
 
     private void OnValidate()
@@ -268,6 +263,7 @@ public class SimulationManager : MonoBehaviour
         }
     }
 
+    /// <summary>Builds the particles, bodies and buffers from scratch. Also runs when R is pressed</summary>
     private void Setup()
     {
         ReleaseBuffers();
@@ -284,8 +280,7 @@ public class SimulationManager : MonoBehaviour
         numBodies = bodies.NumBodies;
         numBoundaryParticles = bodies.NumBoundaryParticles;
 
-        // Fluid closer than half the interaction radius to a body would start squeezed by its boundary particles,
-        // get shot out on the first step and kick the body the other way
+        // Removes fluid spawned inside or too close to a body
         float4[] positions = RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f);
         numParticles = positions.Length;
         Debug.Log($"Simulation manager: {numParticles} particles");
@@ -299,17 +294,14 @@ public class SimulationManager : MonoBehaviour
         gridThreadGroups = compute.GetThreadGroups(KernelIDs["ClearGrid"], SP.NumCells + 1);
         boundaryThreadGroups = compute.GetThreadGroups(0, numBoundaryParticles);
 
-        // Hillis-Steele needs ceil(log2(n)) passes. Rounding up to an even count makes
-        // the ping-pong always land back in CellStart: the extra pass has a stride past
-        // the end of the array, so every entry carries nothing and it is a plain copy.
+        // Number of passes needed to build the grid, rounded up to even
         numScanSteps = 0;
         while ((1 << numScanSteps) < SP.NumCells + 1) numScanSteps++;
         if (numScanSteps % 2 == 1) numScanSteps++;
 
-        // The first step's viscosity reads the grid before that step builds it
+        // The first step needs a grid before it builds its own
         BuildGrid();
 
-        // Boundary particle volumes depend only on the body shapes, so they are computed once
         if (numBodies > 0)
         {
             BuildBoundaryGrid();
@@ -319,8 +311,8 @@ public class SimulationManager : MonoBehaviour
         BuffersChanged?.Invoke(this);
     }
 
-    // Puts a body in the first empty slot of settings.bodies, or a new slot at the end, and returns the slot as its id.
-    // The other bodies keep their slots, positions and motion
+    /// <summary>Adds a body to the first free slot and returns the slot as its id</summary>
+    /// <returns>The body's id</returns>
     internal int AddBody(RigidBodySettings3D body)
     {
         if (settings.bodies.Count(slot => !slot.IsEmpty) >= RigidBodies3D.MaxBodies)
@@ -335,7 +327,6 @@ public class SimulationManager : MonoBehaviour
 
         settings.bodies[id] = body;
 
-        // Before Setup there is no body data yet, and Setup builds every body in the array
         if (bodies == null) return id;
 
         ReadBodyStates();
@@ -344,13 +335,12 @@ public class SimulationManager : MonoBehaviour
         return id;
     }
 
-    // Empties the slot of a body. The other bodies keep their slots, positions and motion
+    /// <summary>Removes a body. The other bodies keep moving</summary>
     internal void RemoveBody(int id)
     {
         CheckBodyId(id);
         settings.bodies[id] = default;
 
-        // Before Setup there is no body data yet
         if (bodies == null) return;
 
         ReadBodyStates();
@@ -358,15 +348,14 @@ public class SimulationManager : MonoBehaviour
         RebuildBodies();
     }
 
-    // UpdateComputeSettings applies masses every frame, so only the slot changes
+    /// <summary>Changes a body's mass, in sim units</summary>
     internal void SetBodyMass(int id, float mass)
     {
         CheckBodyId(id);
         settings.bodies[id].boundaryBodyMass = mass;
     }
 
-    // Rebuilds a body with a new shape and size where it is now. It keeps its rotation but stops, the other bodies keep
-    // their motion
+    /// <summary>Rebuilds a body with a new shape and size where it is now</summary>
     internal void ReshapeBody(int id, BodyShape3D shape, float radius)
     {
         CheckBodyId(id);
@@ -374,13 +363,11 @@ public class SimulationManager : MonoBehaviour
         body.shape = shape;
         body.bodyRadius = radius;
 
-        // Before Setup there is no body data yet, and Setup builds every body in the array
         if (bodies == null) return;
 
         ReadBodyStates();
         RigidBodyState3D state = bodies.states[bodies.inspectorIndices.IndexOf(id)];
 
-        // Cubes and spheres balance at their centre, so the centre of mass is the body position. Both rotations are ZXY
         body.bodyPosition = state.position.xyz;
         body.bodyRotation = ((Quaternion)new quaternion(state.rotation)).eulerAngles;
 
@@ -389,7 +376,7 @@ public class SimulationManager : MonoBehaviour
         RebuildBodies();
     }
 
-    // A scale is a static body, so it is added like one and then only moved by MoveScale
+    /// <summary>Places a scale. Only MoveScale moves it after that</summary>
     internal void AddScale(RigidBodySettings3D scale)
     {
         if (scaleSlots[scale.scale] >= 0)
@@ -398,19 +385,19 @@ public class SimulationManager : MonoBehaviour
         scaleSlots[scale.scale] = AddBody(scale);
     }
 
+    /// <summary>Removes a scale</summary>
     internal void RemoveScale(int scale)
     {
         RemoveBody(ScaleSlot(scale));
         scaleSlots[scale] = -1;
     }
 
-    // Puts the scale at a new position at once. The GPU never moves it, so its state is written over, at rest
+    /// <summary>Teleports a scale to a new position</summary>
     internal void MoveScale(int scale, float3 position)
     {
         int slot = ScaleSlot(scale);
         settings.bodies[slot].bodyPosition = position;
 
-        // Before Setup there is no body data yet, and Setup builds the scale where the slot says
         if (bodies == null) return;
 
         float4 at = new(position, 0);
@@ -418,7 +405,7 @@ public class SimulationManager : MonoBehaviour
         Buffers["BodyStates"].SetData(new[] { state }, 0, bodies.inspectorIndices.IndexOf(slot), 1);
     }
 
-    // The CPU places the scales, so this is exact. Public for the renderers, which label the scales
+    /// <summary>Where a scale is, if it's placed</summary>
     public bool TryGetScalePosition(int scale, out Vector3 position)
     {
         int slot = scale >= 0 && scale < scaleSlots.Length ? scaleSlots[scale] : -1;
@@ -426,8 +413,7 @@ public class SimulationManager : MonoBehaviour
         return slot >= 0;
     }
 
-    // How hard the bodies push down on the scale, in sim force. That is what the scale pushes up on them, which
-    // BodyScaleForces holds per body. The readback lags a frame or two, and is empty until the first one arrives
+    /// <summary>How hard the bodies push down on a scale. Lags a frame or two behind</summary>
     internal float ScaleForce(int scale)
     {
         ScaleSlot(scale);
@@ -439,6 +425,7 @@ public class SimulationManager : MonoBehaviour
         return force;
     }
 
+    /// <summary>The body slot of a scale. Throws if the scale isn't placed</summary>
     private int ScaleSlot(int scale)
     {
         if (scale < 0 || scale >= scaleSlots.Length || scaleSlots[scale] < 0)
@@ -447,13 +434,14 @@ public class SimulationManager : MonoBehaviour
         return scaleSlots[scale];
     }
 
+    /// <summary>Throws if there's no body with this id</summary>
     private void CheckBodyId(int id)
     {
         if (id < 0 || id >= settings.bodies.Length || settings.bodies[id].IsEmpty)
             throw new ArgumentException($"There is no rigid body with id {id}.", nameof(id));
     }
 
-    // The GPU moves the bodies, so the CPU only has their start poses until the current states are copied back
+    /// <summary>Copies the bodies' current positions back from the GPU</summary>
     private void ReadBodyStates()
     {
         if (numBodies == 0) return;
@@ -464,11 +452,10 @@ public class SimulationManager : MonoBehaviour
         bodies.states.AddRange(states);
     }
 
-    // Recreates the body buffers for the current bodies and places the bodies where they are now. The fluid buffers stay
+    /// <summary>Recreates the body buffers after a body is added, removed or reshaped</summary>
     private void RebuildBodies()
     {
-        // Except finds the buffers CreateBuffers replaced, each once, even though the read-only aliases share them.
-        // This frame's draws may already be queued with them, so Update releases them before the next draws
+        // Old buffers are released next frame, since this frame's draws may still use them
         List<ComputeBuffer> previous = Buffers.Values.ToList();
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
         replacedBuffers.AddRange(previous.Except(Buffers.Values));
@@ -481,18 +468,18 @@ public class SimulationManager : MonoBehaviour
 
         if (numBodies > 0)
         {
-            // The uploaded boundary positions are where the bodies started, the grid and the volumes need where they are
+            // Places the boundary particles where the bodies are now
             compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
             BuildBoundaryGrid();
             compute.Dispatch(KernelIDs["CalculateBoundaryVolumes"], boundaryThreadGroups);
 
-            // Fluid inside a new body is pushed out now, before the next step saves PrevPositions, so the push doesn't
-            // turn into velocity
+            // Pushes fluid out of any new body
             compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
         }
     }
 
     #region Buffer helpers
+    /// <summary>Sends the settings that can change while running to the GPU</summary>
     private void UpdateComputeSettings()
     {
         compute.SetFloat("interactionRadius", settings.interactionRadius);
@@ -505,7 +492,7 @@ public class SimulationManager : MonoBehaviour
         if (settings.solverIterations < 1)
             Debug.LogWarning($"Simulation manager: solverIterations is {settings.solverIterations}, nothing will keep the fluid from compressing");
 
-        // The fluid rests at the spawn spacing, which V = spacing³ gives to within about 1% for Poly6 at h = 2 spacings
+        // Each particle stands for one spawn-spacing cube of fluid
         float h = settings.interactionRadius;
         float particleVolume = math.pow(spawn.Spacing, 3);
         compute.SetFloat("particleVolume", particleVolume);
@@ -534,6 +521,7 @@ public class SimulationManager : MonoBehaviour
         compute.SetInt("numBodies", numBodies);
     }
 
+    /// <summary>Sends the settings that only change on setup to the GPU</summary>
     private void SetComputeSettings()
     {
         compute.SetInt("numParticles", numParticles);
@@ -551,6 +539,7 @@ public class SimulationManager : MonoBehaviour
         compute.SetInt("layers", SP.layers);
     }
 
+    /// <summary>Binds every buffer to every kernel</summary>
     private void SetBuffers()
     {
         foreach (var kernel in KernelIDs)
@@ -558,13 +547,13 @@ public class SimulationManager : MonoBehaviour
                 compute.SetBuffer(kernel.Value, buffer.Key, buffer.Value);
     }
 
+    /// <summary>Creates every GPU buffer for the fluid and the bodies</summary>
     private void CreateBuffers(float4[] positions)
     {
         if (numParticles == 0)
             Debug.LogWarning("Simulation manager: there are 0 particles. Creating non-existant buffers.");
 
-        // Cell counts grow cubically as interactionRadius shrinks; columns * rows * layers
-        // silently overflows int well before the allocation itself becomes a problem
+        // A tiny interactionRadius makes more cells than an int can count
         if (SP.NumCells <= 0)
             Debug.LogError($"Simulation manager: grid has {SP.NumCells} cells. interactionRadius is too small for the bounding box, so every neighbour query will read out of range.");
 
@@ -579,15 +568,12 @@ public class SimulationManager : MonoBehaviour
         Buffers["Lambdas"] = ComputeHelper.CreateStructuredBufferWithData<float>(numParticles);
         Buffers["DeltaPositions"] = ComputeHelper.CreateStructuredBufferWithData<float4>(numParticles);
 
-        // One uint per cell for the offsets, one per particle for the grid contents.
-        // ScanTemp is the prefix sum's ping-pong partner, CellCursor the scatter write head.
         Buffers["CellStart"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
         Buffers["ScanTemp"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
         Buffers["CellCursor"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
         Buffers["SortedIndices"] = ComputeHelper.CreateStructuredBufferWithData<uint>(numParticles);
 
-        // Read-only aliases: the same buffers bound under the names the solver kernels and ApplyViscosity read
-        // through, keeping those kernels within the 8 read-write resources a compute shader gets
+        // Read-only copies, see Simulation.compute
         Buffers["PositionsRO"] = Buffers["Positions"];
         Buffers["VelocitiesRO"] = Buffers["Velocities"];
         Buffers["LambdasRO"] = Buffers["Lambdas"];
@@ -597,9 +583,10 @@ public class SimulationManager : MonoBehaviour
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
     }
 
+    /// <summary>Releases every GPU buffer</summary>
     private void ReleaseBuffers()
     {
-        // Distinct: the read-only aliases share buffer instances with their read-write originals
+        // Distinct, because the read-only copies share buffers
         foreach (var buffer in Buffers.Values.Concat(replacedBuffers).Distinct())
             ComputeHelper.Release(buffer);
 
@@ -625,7 +612,7 @@ public class SimulationManager : MonoBehaviour
 
     #endregion
 
-    // The cursor ray intersected with the z = 0 plane, so mouse attraction acts there
+    /// <summary>Where the cursor points on the z = 0 plane</summary>
     private Vector4 GetMousePos()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);

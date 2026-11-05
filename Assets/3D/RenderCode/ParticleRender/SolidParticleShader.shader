@@ -29,7 +29,6 @@ Shader "Custom/SolidParticle3D"
             {
                 v2f o;
 
-                // Camera-facing billboard, as in ParticleShader
                 float3 worldPos = Positions[instanceID].xyz
                     + v.vertex.x * UNITY_MATRIX_V[0].xyz
                     + v.vertex.y * UNITY_MATRIX_V[1].xyz;

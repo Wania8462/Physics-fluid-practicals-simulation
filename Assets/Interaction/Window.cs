@@ -5,21 +5,23 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
+/// <summary>Kinds of field a window can show</summary>
 public enum FieldType
 {
     Numeric,
     Dropdown,
     Toggle,
-    Readout     // A value with its unit that the user can't edit
+    Readout  // Shows a value the user can't edit
 }
 
+/// <summary>One field of a window</summary>
 [Serializable]
 public struct Field
 {
     public string name;
     public FieldType fieldType;
 
-    // Numeric, and Readout without min and max
+    // Numeric and Readout
     public float value;
     public float min;
     public float max;
@@ -32,6 +34,7 @@ public struct Field
     // Toggle
     public bool isOn;
 
+    /// <summary>Height of the field's UI, in pixels</summary>
     public readonly int GetHeight()
     {
         return fieldType switch
@@ -45,6 +48,7 @@ public struct Field
     }
 }
 
+/// <summary>Draggable window of fields. Dropping one window on another groups them</summary>
 public class Window : MonoBehaviour
 {
     private const float HoverGrowth = 1.05f;
@@ -55,15 +59,16 @@ public class Window : MonoBehaviour
     [SerializeField] private FieldUI fieldPrefab;
     [SerializeField] private TMP_InputField title;
 
+    /// <summary>The window's fields. Call UpdateFields after changing the list</summary>
     public List<Field> fields = new();
     private readonly List<FieldUI> fieldUIs = new();
 
-    // Both are raised in LateUpdate, so handlers change the simulation after it has stepped this frame. FieldChanged is
-    // raised once for each field edited this frame, however many edits it got
+    /// <summary>Raised once per edited field per frame, after the simulation steps</summary>
     public event Action<int> FieldChanged;
+    /// <summary>Raised in LateUpdate when the window closes</summary>
     public event Action Closed;
 
-    // Raised when this window is released over another one
+    /// <summary>Raised when this window is released over another one</summary>
     public event Action<Window> DroppedOn;
 
     private readonly HashSet<int> changed = new();
@@ -75,15 +80,16 @@ public class Window : MonoBehaviour
     private bool highlighted;
     private float lastTopBarClick;
 
+    /// <summary>The window's title</summary>
     public string Title { set => title.text = value; }
 
-    // The title is an input field styled as plain text, only editable on renamable windows
+    /// <summary>Whether the user can rename the window</summary>
     public bool Renamable { set => title.interactable = value; }
 
-    // A group's background holds member windows instead of fields
+    /// <summary>A group holds other windows instead of fields</summary>
     public bool IsGroup { get; private set; }
 
-    // Only groupable windows can be dropped onto each other
+    /// <summary>Only groupable windows can be dropped onto each other</summary>
     public bool Groupable { get; set; }
 
     private void Update()
@@ -133,7 +139,7 @@ public class Window : MonoBehaviour
         }
     }
 
-    // The top-level window drawn on top at the point, so a point over a grouped window gives its group
+    /// <summary>The window on top at a point. A point over a grouped window gives its group</summary>
     public static Window TopmostAt(Transform canvas, Vector2 point, Window except = null)
     {
         for (int i = canvas.childCount - 1; i >= 0; i--)
@@ -144,8 +150,7 @@ public class Window : MonoBehaviour
         return null;
     }
 
-    // The whole window, its body only counting when it isn't minimised. World space is screen space on this overlay
-    // canvas
+    /// <summary>The window on screen, without its body when minimised</summary>
     private Rect Bounds()
     {
         Vector3[] bar = new Vector3[4], body = new Vector3[4];
@@ -154,7 +159,7 @@ public class Window : MonoBehaviour
         return Rect.MinMaxRect(bar[0].x, body[0].y, bar[2].x, bar[1].y);
     }
 
-    // Shows the dragged window can be dropped onto this one
+    /// <summary>Grows the window slightly to show a dragged window can be dropped on it</summary>
     private void Highlight(bool on)
     {
         if (on == highlighted)
@@ -164,8 +169,7 @@ public class Window : MonoBehaviour
         transform.localScale *= on ? HoverGrowth : 1 / HoverGrowth;
     }
 
-    // Makes this window a group. The new member goes below every member whose top bar is above the mouse, so dropping
-    // onto a group also reorders it
+    /// <summary>Adds a window to this group, placed by the mouse position</summary>
     public void Add(Window window)
     {
         int index = background.Cast<Transform>().Count(member => member.position.y > Input.mousePosition.y);
@@ -176,9 +180,7 @@ public class Window : MonoBehaviour
         background.gameObject.SetActive(true);
     }
 
-    // Stacks the members down the body in sibling order and fits the body around them. Done every frame, so members
-    // being minimised, closed or dragged out are picked up. A group down to one member leaves it in its place, so the
-    // group is shrunk first or the member would keep the hover growth
+    /// <summary>Stacks the members down the group. A group down to one member dissolves</summary>
     private void LayoutMembers()
     {
         if (background.childCount <= 1)
@@ -209,8 +211,7 @@ public class Window : MonoBehaviour
         ResizeBackground((corners[1].y - y) / background.lossyScale.y);
     }
 
-    // Members are destroyed with their group, and are raised from here since a minimised group's members never reach
-    // LateUpdate
+    /// <summary>Closing a group closes its members too</summary>
     private void RaiseClosed()
     {
         foreach (Transform child in background)
@@ -221,6 +222,7 @@ public class Window : MonoBehaviour
         Closed?.Invoke();
     }
 
+    /// <summary>Rebuilds the field UI from fields</summary>
     public void UpdateFields()
     {
         foreach (Transform child in background)
@@ -247,13 +249,14 @@ public class Window : MonoBehaviour
         ResizeBackground(totalHeight);
     }
 
-    // Changes a field from code, without raising FieldChanged
+    /// <summary>Doesn't raise FieldChanged</summary>
     public void SetField(int index, Field field)
     {
         fields[index] = field;
         fieldUIs[index].Bind(field, index);
     }
 
+    /// <summary>Sets a toggle from code, without raising FieldChanged</summary>
     public void SetToggle(int index, bool isOn)
     {
         Field field = fields[index];
@@ -270,19 +273,19 @@ public class Window : MonoBehaviour
         background.sizeDelta = new Vector2(background.sizeDelta.x, totalHeight);
     }
 
+    /// <summary>Closes the window at the end of the frame</summary>
     public void Close()
     {
         closing = true;
     }
 
-    // Field UI will live under background, so hiding it hides the fields too
+    /// <summary>Hides or shows the fields</summary>
     public void ToggleMinimize()
     {
         background.gameObject.SetActive(!background.gameObject.activeSelf);
     }
 
-    // Dragging a member pulls it out of its group, next to the outermost group. The top bar covers the title, so a
-    // double click on it starts renaming
+    /// <summary>Starts dragging the window. A double click renames it</summary>
     public void OnTopBarClick()
     {
         Window outermost = GetComponentsInParent<Window>().Last();

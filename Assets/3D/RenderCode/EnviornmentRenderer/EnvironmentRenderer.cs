@@ -1,5 +1,6 @@
 using UnityEngine;
 
+/// <summary>Draws the tank's outline</summary>
 public class EnvironmentRenderer : MonoBehaviour
 {
     [SerializeField] private Color tankColor = Color.white;
@@ -8,9 +9,10 @@ public class EnvironmentRenderer : MonoBehaviour
     private Material material;
     private RenderParams rp;
 
+    /// <summary>Builds the outline for the simulation's tank</summary>
     public void Setup(SimulationManager sim)
     {
-        // Always-included built-in shader, so no material asset is needed
+        // Built-in shader, so no material asset is needed
         material = material != null ? material : new Material(Shader.Find("Hidden/Internal-Colored"));
         rp = new RenderParams(material);
 

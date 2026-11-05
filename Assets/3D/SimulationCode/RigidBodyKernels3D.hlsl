@@ -1,12 +1,8 @@
-// Rigid body kernels, included at the end of Simulation.compute, which declares every buffer, uniform and
-// kernel pragma used here (ComputeHelper reflection only reads that file). Math helpers: RigidBodyMath3D.hlsl
+// Rigid body kernels. Included at the end of Simulation.compute, which declares their buffers and pragmas
 
-// A reduction slot of SumCouplingForces holds a force and a torque
-#define CouplingSlotSize 2
+#define CouplingSlotSize 2  // force, torque
 
-// SumContacts groups contacts per wall axis (x, y, z), one group for all other moving bodies, then one per scale, so a
-// scale's push can be told apart. For each group a reduction slot holds the push out (w = number of contacts), the
-// friction, the torque and the approach
+// Contacts are summed in groups: one per wall axis, one for other bodies, then one per scale
 #define ScaleContactGroup 4
 #define ContactGroups (ScaleContactGroup + MaxScales)
 #define ContactSlotSize (ContactGroups * 4)
@@ -36,14 +32,13 @@ float3 ReadBoundaryForceBuffer(uint index)
 
 // ---------- Fluid-body coupling, called from CalculateLambdas, CalculateDeltaPositions and ApplyViscosity ----------
 
-// Density and constraint gradient the boundary particles add to a fluid particle, each standing for its volume of
-// fluid (Akinci et al. 2012)
+// Adds the density that nearby rigid body surfaces give a fluid particle
 void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient)
 {
     for (uint i = 0; i < 27; i++)
     {
         int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset; // negatives wrap and fail the bounds check
+        uint3 neighbourPos = cellPosition + cellOffset;  // negatives wrap and fail the bounds check
         if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
         uint cell = GetCellIndex(neighbourPos);
 
@@ -54,7 +49,6 @@ void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density
             float magSq = DistanceSq(position, boundaryPosition);
             float mag = sqrt(magSq);
 
-            // Branchless mask: 0 when the particles coincide or are out of range
             float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
             float volume = BoundaryVolumesRO[boundary];
             float4 r = (boundaryPosition - position) / max(mag, 1e-9);
@@ -65,9 +59,7 @@ void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density
     }
 }
 
-// The boundary part of a fluid particle's correction pushes it away, and the opposite is stored on the boundary
-// particle, which SumCouplingForces turns into force and torque on its body. lambda is never above 0, so bodies never
-// pull fluid in
+// Pushes a fluid particle away from rigid bodies, and records the opposite push on the body
 void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta)
 {
     for (uint i = 0; i < 27; i++)
@@ -84,7 +76,6 @@ void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, in
             float magSq = DistanceSq(position, boundaryPosition);
             float mag = sqrt(magSq);
 
-            // Branchless mask: 0 when the particles coincide or are out of range
             float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
             float4 r = (boundaryPosition - position) / max(mag, 1e-9);
             float4 correction = w * lambda * BoundaryVolumesRO[boundary] *
@@ -96,7 +87,7 @@ void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, in
     }
 }
 
-// Friction from the boundary particles slows the fluid particle only, as in 2D
+// Slows fluid that moves into a rigid body
 void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 cellPosition)
 {
     for (uint i = 0; i < 27; i++)
@@ -117,7 +108,6 @@ void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 c
             float4 r = (boundaryPosition - position) / max(mag, 1e-9);
             float inwardVelocity = dot(velocity - BoundaryVelocitiesRO[boundary], r);
 
-            // Branchless mask: 0 when the particles coincide, are out of range or are separating
             float w = step(1e-12, magSq) * step(q, 1.0) * step(0.0, inwardVelocity);
             float4 impulse = ViscosityImpulse(dt, boundaryFriction, 0.0, q, inwardVelocity, r);
 
@@ -128,6 +118,7 @@ void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 c
 
 // ---------- Boundary grid: the same counting sort as the fluid grid ----------
 
+// Sorts the boundary particles into grid cells, the same way as the fluid
 [numthreads(64,1,1)]
 void ClearBoundaryGrid (uint3 id : SV_DispatchThreadID)
 {
@@ -151,9 +142,8 @@ void BoundaryScanStep (uint3 id : SV_DispatchThreadID)
     if (id.x > numCells) return;
 
     uint previous = max((int)id.x - (int)scanStride, 0);
-    uint mask = id.x >= scanStride; // 0 for the first stride entries, which carry nothing
+    uint mask = id.x >= scanStride;
 
-    // scanFlip is uniform across the dispatch, so this costs no divergence
     if (scanFlip == 0)
         ScanTemp[id.x] = BoundaryCellStart[id.x] + BoundaryCellStart[previous] * mask;
     else
@@ -182,8 +172,7 @@ void ScatterBoundary (uint3 id : SV_DispatchThreadID)
 
 // ---------- Boundary particles ----------
 
-// One-time volumes, V = 1 / sum of W over the boundary neighbours and the particle itself (Akinci et al. 2012).
-// Neighbours from other bodies are masked out, so a volume doesn't depend on where the bodies start
+// How much fluid each boundary particle stands in for. Only changes when the bodies are rebuilt
 [numthreads(64,1,1)]
 void CalculateBoundaryVolumes (uint3 id : SV_DispatchThreadID)
 {
@@ -197,7 +186,7 @@ void CalculateBoundaryVolumes (uint3 id : SV_DispatchThreadID)
     for (uint i = 0; i < 27; i++)
     {
         int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset; // negatives wrap and fail the bounds check
+        uint3 neighbourPos = cellPosition + cellOffset;
         if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
         uint cell = GetCellIndex(neighbourPos);
 
@@ -206,7 +195,6 @@ void CalculateBoundaryVolumes (uint3 id : SV_DispatchThreadID)
             uint neighbour = BoundarySortedIndices[j];
             float magSq = DistanceSq(position, BoundaryPositions[neighbour]);
 
-            // Poly6 is 0 out of range. Branchless mask: 0 for neighbours from other bodies
             float w = BoundaryBodyIndices[neighbour] == body;
             delta += w * Poly6(magSq, interactionRadiusSq, poly6Factor);
         }
@@ -223,8 +211,7 @@ void ClearBoundaryForceBuffers (uint3 id : SV_DispatchThreadID)
     SetBoundaryForceBuffer(id.x, ZeroImpulse);
 }
 
-// Rebuilds each boundary particle from its body's state: the position from the rest offset, and the velocity
-// of that point of the body, which the fluid friction reads
+// Moves each boundary particle to follow its body
 [numthreads(64,1,1)]
 void PlaceBoundaryParticles (uint3 id : SV_DispatchThreadID)
 {
@@ -239,15 +226,13 @@ void PlaceBoundaryParticles (uint3 id : SV_DispatchThreadID)
 
 // ---------- Body integration: one thread group per body ----------
 
-// Static bodies (scales) have no inverse mass. Nothing on the GPU moves them and they have no forces, only the CPU
-// places them
+// Scales are static: only the CPU moves them
 bool IsStatic(uint body)
 {
     return BodyProperties[body].invMass == 0;
 }
 
-// Gravity and predicted state, the body counterpart of ExternalForces and AdvancePredictedPositions. Also clears the
-// buoyancy readout, which ApplyCouplingForces adds up over the solver iterations
+// Applies gravity to each body and moves it to its predicted position
 [numthreads(1,1,1)]
 void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
 {
@@ -273,8 +258,7 @@ void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Strided reduction of the fluid's push on a body. Thread s of group b adds up every BodyReductionThreads-th
-// boundary particle of body b, starting at its s-th one, and writes only its own slot
+// Adds up the fluid's push on each body, split across the group's threads
 [numthreads(BodyReductionThreads,1,1)]
 void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
@@ -298,11 +282,8 @@ void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThr
     BodyCouplingSums[slot + 1] = float4(torque, 0);
 }
 
-// Moves each body by the fluid's push, once per solver iteration. The boundary particles hold the opposite of the
-// fluid's corrections, so momentum is kept when they are weighted by particleMass: position by m / M times the push,
-// rotation by the inverse inertia times the torque.
-// ponytail: the fluid treats the bodies as fixed within an iteration and they catch up after it, so light bodies may
-// jitter. Adding each body's generalised inverse mass to the lambda denominator would solve them together
+// Moves each body by the fluid's push and records the buoyancy force.
+// ponytail: light bodies may jitter, because fluid and bodies are solved one after the other
 [numthreads(1,1,1)]
 void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
 {
@@ -323,7 +304,6 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
     force *= particleMass;
     torque *= particleMass;
 
-    // The push moves the position alone, so it all becomes velocity: dv = invMass * force / dt, and F = M dv / dt
     BodyForces[id.x * BodyForceCount + ForceBuoyancy] += float4(force / (dt * dt), 0);
 
     float3x3 invInertiaWorld = InverseInertiaWorld(state.rotation, properties.invInertia.xyz);
@@ -333,7 +313,7 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Right mouse pulls bodies, the body counterpart of AttractToMouse. Scales are dragged by the CPU instead
+// Right mouse pulls bodies towards the cursor
 [numthreads(1,1,1)]
 void AttractBodiesToMouse (uint3 id : SV_DispatchThreadID)
 {
@@ -349,8 +329,7 @@ void AttractBodiesToMouse (uint3 id : SV_DispatchThreadID)
 
 // ---------- Contacts with the walls and other bodies ----------
 
-// How far a position has to move to get back inside the walls, zero on axes where it is inside (port of 2D). Bodies
-// stop a particle spacing short of the walls, so fluid gets under a body on the floor and pushes it up
+// How far a point must move to get back inside the tank. Leaves a gap so fluid fits under bodies
 float3 WallPushOut(float3 position)
 {
     float3 halfSize = realHalfBoundSize.xyz - restSpacing;
@@ -358,9 +337,7 @@ float3 WallPushOut(float3 position)
     return (sign(position) * halfSize - position) * outside;
 }
 
-// One positional contact at offset r from the centre of mass. It adds the push out by depth along normal, the friction
-// that undoes the contact point's tangential motion (capped at bodyFriction times the push), and the motion into the
-// contact scaled by this body's share of it, which ApplyContacts takes out of the velocity
+// Adds one contact's push, friction and torque to the running totals
 void AccumulateContact(inout float4 pushSum, inout float4 frictionSum, inout float4 torqueSum, inout float4 approachSum,
                        float invMass, float3x3 invInertiaWorld, float3 r, float3 normal, float depth,
                        float3 contactDisplacement, float share)
@@ -383,7 +360,7 @@ void AccumulateContact(inout float4 pushSum, inout float4 frictionSum, inout flo
     approachSum.xyz += normal * min(dot(contactDisplacement, normal), 0.0) * share * isContact;
 }
 
-// Strided reduction of every contact of a body's boundary particles, sorted into contact groups
+// Finds every contact of each body with the walls, other bodies and scales
 [numthreads(BodyReductionThreads,1,1)]
 void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
@@ -413,8 +390,7 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
         float3 contactPosition = state.position.xyz + r;
         float3 displacement = contactPosition - (state.prevPosition.xyz + QuaternionRotate(state.prevRotation, restOffset));
 
-        // The walls are axis-aligned, so each axis is its own constraint, and they never move, so this body takes
-        // the whole correction
+        // Contacts with the tank walls
         float3 wallPush = WallPushOut(contactPosition);
         AccumulateContact(pushes[0], frictions[0], torques[0], approaches[0], properties.invMass, invInertiaWorld,
                           r, float3(sign(wallPush.x), 0, 0), abs(wallPush.x), displacement, 1.0);
@@ -423,9 +399,7 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
         AccumulateContact(pushes[2], frictions[2], torques[2], approaches[2], properties.invMass, invInertiaWorld,
                           r, float3(0, 0, sign(wallPush.z)), abs(wallPush.z), displacement, 1.0);
 
-        // Other bodies: push out along their surface normals, keeping the share of the correction the masses give
-        // this body. Friction and the approach use the motion relative to the other body's surface. Moving bodies
-        // share one contact, each scale gets its own. Scales never move, so this body takes their whole correction
+        // Contacts with other bodies and scales
         float3 bodyPush = 0;
         float3 otherDisplacement = 0;
         float touching = 0;
@@ -442,12 +416,10 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
             float3 otherNormal;
             float otherDistance = BodySignedDistance(otherProperties, otherState, contactPosition, otherNormal);
 
-            // Scales keep a particle spacing between their pan and a body, like the walls, so fluid gets under it
             float isScale = otherProperties.invMass == 0;
             float contactDistance = particleRadius + isScale * restSpacing;
 
-            // Only pushes that move this body away from the other body's centre count. In a deep overlap, particles past
-            // the other body's centre are closest to its far side, and pushing them out there pulls the bodies together
+            // Ignore pushes that would pull the two bodies together
             float facing = step(0.0, dot(otherNormal, state.position.xyz - otherState.position.xyz));
             float inside = step(otherDistance, contactDistance) * facing * (other != body);
             float share = properties.invMass / (properties.invMass + otherProperties.invMass);
@@ -489,19 +461,14 @@ void SumContacts (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     }
 }
 
-// The push moves both positions, so only the friction and the removed approach change the velocity, and F = M dv / dt
+// Contact force on a body, for the arrows and readouts
 float3 ContactForce(float3 frictionChange, float3 approachChange, float invMass)
 {
     return (frictionChange - approachChange) / (invMass * dt * dt);
 }
 
-// Adds up a body's contact slots and applies each group's average (Jacobi averaging), so hundreds of floor contacts
-// neither overshoot nor dilute a handful of wall contacts.
-// Velocity comes from the change in position, so the push out moves the previous position as well: resolving a
-// penetration must not become velocity, or a body starting inside a wall is fired out of it. The motion into the
-// contacts is removed from the velocity instead, which makes contacts inelastic, and friction moves the position
-// alone so that it slows the body down.
-// Each scale group's force is also kept in BodyScaleForces, the push of that scale on this body, which the scale reads
+// Moves each body out of whatever it's touching and applies friction.
+// Also records how hard each scale pushes on it, for the scale readings
 [numthreads(1,1,1)]
 void ApplyContacts (uint3 id : SV_DispatchThreadID)
 {
@@ -559,7 +526,7 @@ void ApplyContacts (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Velocities from the change in state, the body counterpart of CalculateVelocity
+// Each body's velocity from how far it moved and turned this step
 [numthreads(1,1,1)]
 void BodyCalculateVelocity (uint3 id : SV_DispatchThreadID)
 {
@@ -568,7 +535,7 @@ void BodyCalculateVelocity (uint3 id : SV_DispatchThreadID)
     RigidBodyState state = BodyStates[id.x];
     state.velocity = (state.position - state.prevPosition) / dt;
 
-    // Rotation over the step as a quaternion. q and -q are the same rotation, flipping to w >= 0 takes the short way
+    // Take the shorter way round
     float4 change = QuaternionMultiply(state.rotation, QuaternionConjugate(state.prevRotation));
     float shortWay = step(0.0, change.w) * 2.0 - 1.0;
     state.angularVelocity = float4(2.0 * shortWay * change.xyz / dt, 0);
@@ -576,7 +543,7 @@ void BodyCalculateVelocity (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Eases the drawn forces towards the last step's, so the arrows and values don't jitter with the solver
+// Smooths the forces shown on screen so they don't flicker
 [numthreads(1,1,1)]
 void SmoothBodyForces (uint3 id : SV_DispatchThreadID)
 {
@@ -591,9 +558,7 @@ void SmoothBodyForces (uint3 id : SV_DispatchThreadID)
 
 // ---------- Fluid against bodies ----------
 
-// Hard collision of fluid particles with every body: a particle closer than particleRadius to a surface is pushed
-// out along the surface normal. Kernel pressure is soft and sampled at points, so squeezed particles can slip
-// between boundary particles (port of the 2D circle and square body collisions)
+// Pushes fluid particles out of any rigid body they ended up inside
 [numthreads(64,1,1)]
 void ResolveBodyCollisions (uint3 id : SV_DispatchThreadID)
 {

@@ -2,15 +2,14 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 
-// Open-addressing hash map with ref indexer.
-// WARNING: Do not hold onto a ref across any Add/Remove call — resizing invalidates refs.
+/// <summary>Hash map with a ref indexer. Don't hold a ref across Add/Remove</summary>
 public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>>, IDictionary<TKey, TValue>
 {
     private struct Entry
     {
         public TKey Key;
         public TValue Value;
-        public int Hash; // 0 = empty, int.MinValue = deleted (tombstone)
+        public int Hash;
     }
 
     private const int Empty = 0;
@@ -27,7 +26,7 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
         _entries = new Entry[NextPow2(Math.Max(capacity, 4))];
     }
 
-    // ref indexer — public, allows in-place mutation
+    /// <summary>Value by reference, so it can be changed in place. Throws if the key is missing</summary>
     public ref TValue this[TKey key]
     {
         get
@@ -39,7 +38,6 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
         }
     }
 
-    // IDictionary<TKey, TValue> indexer — get or add/update
     TValue IDictionary<TKey, TValue>.this[TKey key]
     {
         get
@@ -106,6 +104,7 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
 
     void ICollection<KeyValuePair<TKey, TValue>>.Add(KeyValuePair<TKey, TValue> item) => Add(item.Key, item.Value);
 
+    /// <summary>Removes the key. Throws if it is missing</summary>
     public void Remove(TKey key)
     {
         int index = FindIndex(key);
@@ -135,6 +134,7 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
         return true;
     }
 
+    /// <summary>Removes the key if it is there</summary>
     public bool TryRemove(TKey key)
     {
         int index = FindIndex(key);
@@ -176,8 +176,7 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
                 array[i++] = new KeyValuePair<TKey, TValue>(entry.Key, entry.Value);
     }
 
-    // Returns ref to value, adding a default entry if key is missing.
-    // Useful for in-place modification without a separate Add call.
+    /// <summary>Value by reference, adding a default one if the key is missing</summary>
     public ref TValue GetOrAdd(TKey key)
     {
         if (_count >= _entries.Length * LoadFactor)
@@ -251,7 +250,7 @@ public class RefDictionary<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue
     private int GetHash(TKey key)
     {
         int h = EqualityComparer<TKey>.Default.GetHashCode(key!);
-        // Perturb to avoid clustering and ensure h is never a sentinel value
+        // Mixes the hash and keeps it off the reserved Empty and Tombstone values
         h ^= h >> 16;
         if (h == Empty) h = 1;
         if (h == Tombstone) h = Tombstone + 1;

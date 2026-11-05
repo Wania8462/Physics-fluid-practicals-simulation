@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 
+/// <summary>A list that gives its elements by reference</summary>
 public interface IRefList<T> : IEnumerable<T>, ICollection<T>, IReadOnlyCollection<T>, IReadOnlyList<T>, IList<T>
 {
     int Capacity { get; }

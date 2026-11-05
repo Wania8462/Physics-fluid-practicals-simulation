@@ -1,7 +1,4 @@
-/// <summary>
-/// A fixed-size integer array used as a sparse set mapping.
-/// Logs an error via Debug.LogError when a read returns -1 (particle not found / slot empty).
-/// </summary>
+/// <summary>Fixed-size array mapping ids to slots. Reading an empty slot (-1) throws</summary>
 public class SparseArray
 {
     private int[] _items;

@@ -1,13 +1,13 @@
 using UnityEngine;
 
-// How the fluid particles are drawn
+/// <summary>How the fluid is drawn</summary>
 enum FluidRenderMode
 {
     Billboards,
     ScreenSpace
 }
 
-// The only listener of the simulation's events, so it decides what is set up and drawn
+/// <summary>Sets up and draws every renderer when the simulation asks</summary>
 public class RenderManager : MonoBehaviour
 {
     [SerializeField] private SimulationManager sim;
@@ -24,13 +24,14 @@ public class RenderManager : MonoBehaviour
     [Tooltip("Direction the light travels in, shared by every shader that declares lightDirection")]
     [SerializeField] private Vector3 lightDirection = new(-0.4f, -1, 0.6f);
 
+    /// <summary>Sets up every renderer for the new buffers</summary>
     private void Setup(SimulationManager sim)
     {
         TrySetup(environmentRenderer, () => environmentRenderer.Setup(sim));
         TrySetup(particleRenderer, () => particleRenderer.Setup(sim));
         TrySetup(bodyRenderer, () => bodyRenderer.Setup(sim));
 
-        // Only needed in screen-space mode, so leaving it unassigned isn't an error while the fluid is drawn as billboards
+        // Optional unless in screen-space mode
         if (screenSpaceFluidRenderer != null || fluidRenderMode == FluidRenderMode.ScreenSpace)
             TrySetup(screenSpaceFluidRenderer, () => screenSpaceFluidRenderer.Setup(sim, bodyRenderer));
 
@@ -38,7 +39,7 @@ public class RenderManager : MonoBehaviour
             TrySetup(visualiser, () => visualiser.Setup(sim));
     }
 
-    // One renderer failing to set up doesn't stop the others. Clicking the error selects the renderer that failed
+    /// <summary>Logs a renderer that fails to set up, without stopping the others</summary>
     private void TrySetup(Object renderer, System.Action setup)
     {
         try
@@ -51,14 +52,13 @@ public class RenderManager : MonoBehaviour
         }
     }
 
+    /// <summary>Draws everything for this frame</summary>
     private void Draw()
     {
-        // Global, so every renderer's shader lights from the same direction without being passed it. Set each frame so inspector changes show
         Shader.SetGlobalVector("lightDirection", lightDirection);
 
         environmentRenderer.DrawTank();
 
-        // Disabling the screen-space renderer takes its command buffer off the camera, so billboard mode renders as before
         bool screenSpace = fluidRenderMode == FluidRenderMode.ScreenSpace;
         if (screenSpaceFluidRenderer != null)
             screenSpaceFluidRenderer.enabled = screenSpace;
@@ -77,7 +77,7 @@ public class RenderManager : MonoBehaviour
             visualiser.Draw();
     }
 
-    // Runs before SimulationManager.Start, so the first BuffersChanged isn't missed
+    /// <summary>Runs before SimulationManager.Start, so the first BuffersChanged isn't missed</summary>
     private void OnEnable()
     {
         sim.BuffersChanged += Setup;

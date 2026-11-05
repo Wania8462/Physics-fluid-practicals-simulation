@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using UnityEngine;
 
-// Shape ids, matching ShapeCube, ShapeSphere and ShapeScale in RigidBodyMath3D.hlsl
+/// <summary>Matches the shape ids in RigidBodyMath3D.hlsl</summary>
 public enum BodyShape3D
 {
     Cube = 0,
@@ -12,6 +12,7 @@ public enum BodyShape3D
     Scale = 2
 }
 
+/// <summary>Inspector settings of one rigid body</summary>
 [Serializable]
 public struct RigidBodySettings3D
 {
@@ -27,11 +28,11 @@ public struct RigidBodySettings3D
     [Tooltip("Scales only: which scale this is, below RigidBodies3D.MaxScales")]
     public int scale;
 
-    // A slot of the bodies array without a body. SimulationManager.RemoveBody clears slots to default, whose radius is 0
+    /// <summary>An empty slot in the bodies array</summary>
     public bool IsEmpty => bodyRadius == 0;
 }
 
-// Mirrors RigidBodyProperties in RigidBodyMath3D.hlsl
+/// <summary>Mirrors RigidBodyProperties in RigidBodyMath3D.hlsl</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct RigidBodyProperties3D
 {
@@ -44,7 +45,7 @@ public struct RigidBodyProperties3D
     public float invMass;
 }
 
-// Mirrors RigidBodyState in RigidBodyMath3D.hlsl
+/// <summary>Mirrors RigidBodyState in RigidBodyMath3D.hlsl</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct RigidBodyState3D
 {
@@ -56,8 +57,7 @@ public struct RigidBodyState3D
     public float4 angularVelocity;
 }
 
-// CPU-side contents of the rigid body buffers, one entry per simulated body. Lists, because bodies are added and removed
-// while the simulation runs and the buffers stay packed. inspectorIndices holds each body's slot in the bodies array
+/// <summary>CPU copy of the rigid body data sent to the GPU</summary>
 public class RigidBodyData3D
 {
     public List<RigidBodySettings3D> settings = new();
@@ -72,30 +72,30 @@ public class RigidBodyData3D
     public int NumBoundaryParticles => boundaryPositions.Count;
 }
 
-// Adding a shape: a BodyShape3D value, a sampler in Spawn3DParticles, cases in SampleSurface, SetMassProperties,
-// RadiusFromVolume and SignedDistance below, and a signed distance with a mask term in RigidBodyMath3D.hlsl
+/// <summary>
+/// Adding a shape: a BodyShape3D value, a sampler in Spawn3DParticles, cases in the switches below,
+/// and a signed distance in RigidBodyMath3D.hlsl
+/// </summary>
 public static class RigidBodies3D
 {
     public const int MaxBodies = 10;
 
-    // Scales are static bodies the CPU places, a box base with a cylinder pan on top. Matching MaxScales, ScalePanRadius
-    // and ScalePanHalfHeight in RigidBodyMath3D.hlsl.
-    // ponytail: one fixed size, picked so a 2 L block (25 units wide) fits on the pan. Tune here and in the hlsl
+    // ponytail: scales come in one fixed size, big enough for a 2 L block
+    /// <summary>Most scales at once. The scale constants must match RigidBodyMath3D.hlsl</summary>
     public const int MaxScales = 2;
     public static readonly float3 ScaleHalfExtents = new(25, 4, 25);
     public const float ScalePanRadius = 20;
     public const float ScalePanHalfHeight = 1.5f;
 
-    // Threads per body in the strided reduction kernels, matching BodyReductionThreads in RigidBodyMath3D.hlsl
+    /// <summary>Threads per body in the summing kernels. These constants must match the hlsl</summary>
     public const int ReductionThreads = 64;
 
-    // float4s per reduction slot, matching CouplingSlotSize and ContactSlotSize in RigidBodyKernels3D.hlsl
     public const int CouplingSlotSize = 2;
     public const int ContactSlotSize = (4 + MaxScales) * 4;
 
-    // Forces per body in BodyForces, matching BodyForceCount in RigidBodyMath3D.hlsl
     public const int ForceCount = 3;
 
+    /// <summary>Builds every valid body in the inspector array</summary>
     public static RigidBodyData3D Build(RigidBodySettings3D[] inspectorBodies, Spawn3DParticles spawn, float interactionRadius, Tank tank)
     {
         RigidBodyData3D data = new();
@@ -131,7 +131,7 @@ public static class RigidBodies3D
         return data;
     }
 
-    // Appends a body at its start pose, with its boundary particles after those of the bodies before it
+    /// <summary>Adds a body and samples its surface into boundary particles</summary>
     public static void AddBody(RigidBodyData3D data, RigidBodySettings3D body, int inspectorIndex, Spawn3DParticles spawn)
     {
         uint bodyIndex = (uint)data.NumBodies;
@@ -141,7 +141,6 @@ public static class RigidBodies3D
         RigidBodyProperties3D bodyProperties = new()
         {
             size = body.shape == BodyShape3D.Scale ? new float4(ScaleHalfExtents, body.scale) : new float4(new float3(body.bodyRadius), 0),
-            // Uniform cubes and spheres balance at their centre
             centerOfMass = float4.zero,
             shape = (uint)body.shape,
             start = (uint)data.boundaryPositions.Count,
@@ -171,8 +170,7 @@ public static class RigidBodies3D
         data.properties.Add(bodyProperties);
     }
 
-    // Removes the body built from a slot of the bodies array, with its boundary particles. The bodies after it in the
-    // lists move down one index and keep their states
+    /// <summary>Removes a body and its boundary particles. The other bodies keep their state</summary>
     public static void RemoveBody(RigidBodyData3D data, int slot)
     {
         // Build skips invalid slots, so there may be nothing to remove
@@ -186,7 +184,6 @@ public static class RigidBodies3D
         data.boundaryRestPositions.RemoveRange(start, count);
         data.boundaryBodyIndices.RemoveRange(start, count);
 
-        // The boundary particles after the removed ones belong to the bodies after it
         for (int i = start; i < data.NumBoundaryParticles; i++)
             data.boundaryBodyIndices[i]--;
 
@@ -195,7 +192,6 @@ public static class RigidBodies3D
         data.properties.RemoveAt(index);
         data.states.RemoveAt(index);
 
-        // The bodies after it now start count particles earlier
         for (int b = index; b < data.NumBodies; b++)
         {
             RigidBodyProperties3D properties = data.properties[b];
@@ -204,8 +200,7 @@ public static class RigidBodies3D
         }
     }
 
-    // Uniform solids: sphere I = 2/5 m r^2, cube I = 1/6 m a^2 with edge a = 2r. A mass <= 0 falls back to the
-    // boundary particle count, like 2D. Scales are static, with infinite mass and inertia
+    /// <summary>Sets a body's mass and how hard it is to spin. Scales can't move</summary>
     public static void SetMassProperties(ref RigidBodyProperties3D properties, RigidBodySettings3D body)
     {
         if (body.shape == BodyShape3D.Scale)
@@ -228,7 +223,7 @@ public static class RigidBodies3D
         properties.invInertia = new float4(new float3(1 / inertia), 0);
     }
 
-    // The bodyRadius that gives a body this volume: sphere radius, or half the edge length of a cube
+    /// <summary>The bodyRadius that gives a body this volume</summary>
     public static float RadiusFromVolume(BodyShape3D shape, float volume) => shape switch
     {
         BodyShape3D.Cube => math.pow(volume, 1f / 3) / 2,
@@ -236,7 +231,7 @@ public static class RigidBodies3D
         _ => throw new ArgumentOutOfRangeException(nameof(shape), $"Rigid bodies: no volume for shape {shape}")
     };
 
-    // Mass is the only body setting applied live; shape, size, sampling and pose need a reset
+    /// <summary>Applies mass changes live, other settings need a reset</summary>
     public static void UpdateMasses(RigidBodyData3D data, RigidBodySettings3D[] inspectorBodies, ComputeBuffer propertiesBuffer)
     {
         if (data == null || data.NumBodies == 0 || inspectorBodies == null) return;
@@ -245,15 +240,13 @@ public static class RigidBodies3D
         {
             int index = data.inspectorIndices[b];
 
-            // The array was shortened in the inspector, that body updates on reset. Bodies aren't in slot order, because
-            // an added body can reuse a lower slot, so the rest still have to be checked. Scales have no mass to update
+            // Skip bodies removed from the inspector array, and scales
             if (index >= inspectorBodies.Length || inspectorBodies[index].shape == BodyShape3D.Scale) continue;
 
             float mass = inspectorBodies[index].boundaryBodyMass;
             if (mass <= 0)
                 Debug.LogWarning($"Rigid bodies: body {index} has boundaryBodyMass {mass}, falling back to its boundary particle count ({data.properties[b].count})");
 
-            // List elements are copies, so each struct is changed and written back
             RigidBodySettings3D body = data.settings[b];
             body.boundaryBodyMass = mass;
             data.settings[b] = body;
@@ -266,8 +259,7 @@ public static class RigidBodies3D
         propertiesBuffer.SetData(data.properties);
     }
 
-    // Every buffer gets at least one element so it exists without bodies. BoundaryCellStart always spans the whole
-    // grid because the solver kernels index it by cell
+    /// <summary>Creates the GPU buffers, at least one element each so they exist without bodies</summary>
     public static void CreateBuffers(Dictionary<string, ComputeBuffer> buffers, RigidBodyData3D data, int numCells)
     {
         int boundaryCount = math.max(data.NumBoundaryParticles, 1);
@@ -292,7 +284,6 @@ public static class RigidBodies3D
         buffers["SmoothedBodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
         buffers["BodyScaleForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * MaxScales);
 
-        // Read-only aliases share the instances above, see the note in Simulation.compute
         buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];
         buffers["BoundaryVelocitiesRO"] = buffers["BoundaryVelocities"];
         buffers["BoundaryVolumesRO"] = buffers["BoundaryVolumes"];
@@ -300,7 +291,7 @@ public static class RigidBodies3D
         buffers["BoundarySortedIndicesRO"] = buffers["BoundarySortedIndices"];
     }
 
-    // Drops fluid particles closer than margin to a body's surface, so they don't start squeezed against it
+    /// <summary>Removes fluid particles closer than margin to a body</summary>
     public static float4[] RemoveParticlesInsideBodies(float4[] positions, List<RigidBodySettings3D> bodies, float margin)
     {
         if (bodies.Count == 0) return positions;
@@ -326,8 +317,7 @@ public static class RigidBodies3D
         return kept.ToArray();
     }
 
-    // The box isn't drawn, so a body placed partly outside it is easy to miss. It gets pushed back in over the first
-    // frames, which moves it away from where it was placed
+    /// <summary>Warns about bodies that start partly outside the tank</summary>
     private static void WarnAboutWalls(RigidBodyData3D data, float3 innerHalfSize)
     {
         for (int b = 0; b < data.NumBodies; b++)
@@ -343,8 +333,7 @@ public static class RigidBodies3D
         }
     }
 
-    // Bodies that start inside each other can't be pushed apart cleanly, so point them out. Adding an element to the
-    // bodies array in the inspector copies the last one, which puts the new body exactly on top of it
+    /// <summary>Warns about bodies that start inside each other</summary>
     private static void WarnAboutOverlaps(RigidBodyData3D data)
     {
         for (int a = 0; a < data.NumBodies; a++)
@@ -357,7 +346,7 @@ public static class RigidBodies3D
         }
     }
 
-    // Whether any boundary particle of body a starts inside body b
+    /// <summary>Whether any boundary particle of body a starts inside body b</summary>
     private static bool StartsInside(RigidBodyData3D data, int a, int b)
     {
         RigidBodySettings3D other = data.settings[b];
@@ -374,6 +363,7 @@ public static class RigidBodies3D
         return false;
     }
 
+    /// <summary>Points on the surface of a body, centred on the origin</summary>
     private static float3[] SampleSurface(RigidBodySettings3D body, Spawn3DParticles spawn) => body.shape switch
     {
         BodyShape3D.Cube => spawn.InitCubeSurfacePositions(body.bodyRadius, body.sampleDensity),
@@ -382,7 +372,7 @@ public static class RigidBodies3D
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no sampler for shape {body.shape}")
     };
 
-    // CPU versions of the shape signed distances in RigidBodyMath3D.hlsl, for a shape-local position
+    /// <summary>Distance from a point to a body's surface, negative inside</summary>
     private static float SignedDistance(RigidBodySettings3D body, float3 local) => body.shape switch
     {
         BodyShape3D.Cube => BoxSignedDistance(local, new float3(body.bodyRadius)),
@@ -392,13 +382,14 @@ public static class RigidBodies3D
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no signed distance for shape {body.shape}")
     };
 
+    /// <summary>Distance to a box's surface, negative inside</summary>
     private static float BoxSignedDistance(float3 local, float3 halfExtents)
     {
         float3 q = math.abs(local) - halfExtents;
         return math.length(math.max(q, 0f)) + math.min(math.cmax(q), 0f);
     }
 
-    // Cylinder along y, centred on the origin
+    /// <summary>Distance to a cylinder standing along y, negative inside</summary>
     private static float CylinderSignedDistance(float3 local, float radius, float halfHeight)
     {
         float2 d = new(math.length(local.xz) - radius, math.abs(local.y) - halfHeight);
@@ -407,6 +398,7 @@ public static class RigidBodies3D
 
     private static quaternion GetRotation(RigidBodySettings3D body) => quaternion.Euler(math.radians(body.bodyRotation));
 
+    /// <summary>A buffer of the data, or of one empty element if there's none</summary>
     private static ComputeBuffer CreateNonEmptyBuffer<T>(List<T> data) where T : struct =>
         data.Count > 0
             ? ComputeHelper.CreateStructuredBufferWithData(data.ToArray())

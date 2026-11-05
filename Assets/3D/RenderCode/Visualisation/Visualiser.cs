@@ -5,7 +5,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
 
-// The forces in BodyForces in their order, then the resultant, which the shader adds up from the others
+/// <summary>Forces drawn on each body. The resultant is the sum of the others</summary>
 public enum BodyForce
 {
     Gravity,
@@ -14,14 +14,12 @@ public enum BodyForce
     Resultant
 }
 
-// Draws the forces on every rigid body as arrows from its centre of mass, posed in the vertex shader straight from the
-// body buffers like BodyRenderer, and their values as UI labels. Forces are the last step's, so they stay while paused.
-// Also writes the scales' readings on the sides of their bases, and as a UI label over their pans
+/// <summary>Draws force arrows and values on the bodies, and the scale readings</summary>
 public class Visualiser : MonoBehaviour
 {
-    private const int ArrowsPerBody = 4;    // BodyForce values
+    private const int ArrowsPerBody = 4;
     private static readonly Vector2 ValuePadding = new(8, 4);
-    // How far the side readings sit off the base, so they don't flicker against it
+    /// <summary>Small gap so the side text doesn't flicker against the base</summary>
     private const float SideTextGap = 0.05f;
 
     [Tooltip("The camera the arrows are drawn for")]
@@ -31,8 +29,7 @@ public class Visualiser : MonoBehaviour
     [Tooltip("An empty RectTransform filling a Screen Space - Overlay canvas, placed before the windows so they cover the values")]
     [SerializeField] private RectTransform valueParent;
 
-    // ponytail: linear, so a 0.1 kg cork and an 80 kg steel block can't both read well at one scale. Clamp or use a log
-    // scale if the practicals need both at once
+    // ponytail: linear, so very light and very heavy bodies can't both read well
     [Tooltip("Arrow length per unit of sim force. A 2 L block of wood is 25 units wide and weighs about 10000")]
     [SerializeField] internal float arrowScale = 0.002f;
     [Tooltip("Arrows of bigger forces are drawn as long as one of this many newtons, so they stay on screen. The value still reads the real force")]
@@ -51,18 +48,18 @@ public class Visualiser : MonoBehaviour
     [Tooltip("Colour of the scale readings, on their sides and in their labels")]
     [SerializeField] private Color scaleColor = Color.black;
 
-    // Set through RenderAPI, indexed by BodyForce
+    /// <summary>Which forces are drawn, indexed by BodyForce</summary>
     internal readonly bool[] shown = new bool[ArrowsPerBody];
+    /// <summary>Whether each force value is written next to its arrow</summary>
     internal bool showValues;
 
-    // Set through RenderAPI, indexed by scale. A scale without text has nothing drawn
+    /// <summary>Text written on each scale, null for none</summary>
     internal readonly string[] scaleTexts = new string[RigidBodies3D.MaxScales];
+    /// <summary>Whether each scale's text also floats over it</summary>
     internal readonly bool[] scaleLabelsShown = new bool[RigidBodies3D.MaxScales];
 
-    // Where the scales are, from Setup
     private SimulationManager sim;
 
-    // The readings on the 4 sides of each scale's base, made the first time the scale has text
     private readonly TextMeshPro[][] sideTexts = new TextMeshPro[RigidBodies3D.MaxScales][];
 
     private Mesh mesh;
@@ -71,18 +68,17 @@ public class Visualiser : MonoBehaviour
     private CommandBuffer cmd;
     private bool drawArrows;
 
-    // CPU copies of the body buffers for the values, read back while they are shown
     private ComputeBuffer statesBuffer;
     private ComputeBuffer forcesBuffer;
     private RigidBodyState3D[] states;
     private Vector4[] forces;
 
-    // One per value drawn so far, the ones not needed this frame are hidden
     private readonly List<(RectTransform box, TMP_Text text)> labels = new();
 
     private Color[] Colors => new[] { gravityColor, contactColor, buoyancyColor, resultantColor };
     private float MaxArrowLength => maxArrowNewtons * forcePerNewton * arrowScale;
 
+    /// <summary>Binds the body buffers. Runs whenever they are rebuilt</summary>
     public void Setup(SimulationManager sim)
     {
         this.sim = sim;
@@ -96,14 +92,13 @@ public class Visualiser : MonoBehaviour
 
         rp = ComputeHelper.CreateRenderParams(material);
         rp.matProps.SetBuffer("BodyStates", sim.Buffers["BodyStates"]);
-        // Smoothed, so the arrows and values don't jitter
         rp.matProps.SetBuffer("BodyForces", sim.Buffers["SmoothedBodyForces"]);
 
         statesBuffer = sim.Buffers["BodyStates"];
         forcesBuffer = sim.Buffers["SmoothedBodyForces"];
     }
 
-    // Settings are set every frame so inspector changes show while playing. The light direction is a global set by RenderManager
+    /// <summary>Updates the arrow settings and requests the forces for the values</summary>
     public void Draw()
     {
         int shownForces = 0;
@@ -121,8 +116,7 @@ public class Visualiser : MonoBehaviour
         rp.matProps.SetFloat("headLength", headLength);
         rp.matProps.SetVectorArray("colors", Array.ConvertAll(Colors, color => (Vector4)color));
 
-        // The values are drawn on the CPU, so they need the forces back. Async, so the GPU isn't stalled, which leaves
-        // the values a frame or two behind the arrows
+        // Reads the forces back for the value labels
         if (showValues)
         {
             AsyncGPUReadback.Request(statesBuffer, request => { if (!request.hasError) states = request.GetData<RigidBodyState3D>().ToArray(); });
@@ -130,9 +124,7 @@ public class Visualiser : MonoBehaviour
         }
     }
 
-    // Recorded right before the camera renders, after everything that moves it this frame has run. The buffer runs after
-    // everything else the camera draws, the screen-space fluid included, so it sets the camera's matrices itself: the
-    // fluid's Blits replace them
+    /// <summary>Draws the arrows after the fluid, so it sets the camera matrices itself</summary>
     private void RecordArrows(Camera camera)
     {
         if (camera != cam) return;
@@ -144,7 +136,7 @@ public class Visualiser : MonoBehaviour
         cmd.DrawMeshInstancedIndirect(mesh, 0, material, 0, commandBuf, 0, rp.matProps);
     }
 
-    // Each value sits at the middle of its arrow on the canvas, so it faces the camera, keeps its size and stays under the windows
+    /// <summary>Places the force value labels and the scale readings</summary>
     private void LateUpdate()
     {
         int used = 0;
@@ -154,7 +146,7 @@ public class Visualiser : MonoBehaviour
             Color[] colors = Colors;
             const int ForceCount = RigidBodies3D.ForceCount;
 
-            // The two readbacks can come from either side of a body being added or removed
+            // The two readbacks may disagree on body count after one is added or removed
             int numBodies = Mathf.Min(states.Length, forces.Length / ForceCount);
 
             for (int body = 0; body < numBodies; body++)
@@ -167,7 +159,7 @@ public class Visualiser : MonoBehaviour
                 {
                     Vector3 force = arrow == (int)BodyForce.Resultant ? resultant : (Vector3)forces[body * ForceCount + arrow];
 
-                    // The placeholder body of an empty buffer has no forces
+                    // Empty buffers hold a placeholder body with no forces
                     if (!shown[arrow] || force == Vector3.zero) continue;
 
                     Vector3 middle = (Vector3)states[body].position.xyz + Vector3.ClampMagnitude(force * arrowScale, MaxArrowLength) / 2;
@@ -203,7 +195,7 @@ public class Visualiser : MonoBehaviour
             labels[i].box.gameObject.SetActive(false);
     }
 
-    // Shows the next label of the pool over a point in the world, unless the point is behind the camera
+    /// <summary>Shows the next free label over a point in the world</summary>
     private void PlaceLabel(ref int used, Vector3 world, string value, Color color)
     {
         Vector3 screen = cam.WorldToScreenPoint(world);
@@ -224,8 +216,7 @@ public class Visualiser : MonoBehaviour
         box.gameObject.SetActive(true);
     }
 
-    // One text on each side of the base, facing out, sized to the side and filled by auto sizing. They are children of
-    // one object that is moved to the scale's position
+    /// <summary>The reading written on each side of a scale's base</summary>
     private TextMeshPro[] CreateSideTexts(int scale)
     {
         Transform sides = new GameObject($"Scale {scale} reading").transform;
@@ -241,7 +232,6 @@ public class Visualiser : MonoBehaviour
             TextMeshPro text = new GameObject("Side", typeof(RectTransform), typeof(TextMeshPro)).GetComponent<TextMeshPro>();
             text.transform.SetParent(sides, false);
 
-            // Text reads the right way round seen along its forward, so it looks into the base
             text.transform.localPosition = Vector3.Scale(outward, halfExtents) + outward * SideTextGap;
             text.transform.localRotation = Quaternion.LookRotation(-outward);
 
@@ -261,7 +251,7 @@ public class Visualiser : MonoBehaviour
         return texts;
     }
 
-    // A white box with the value centred on it. Neither takes clicks, so they don't block the windows or the scene
+    /// <summary>A white box with the value centred on it, which doesn't block clicks</summary>
     private (RectTransform box, TMP_Text text) CreateLabel()
     {
         GameObject box = new("Force value", typeof(RectTransform), typeof(Image));
@@ -281,9 +271,10 @@ public class Visualiser : MonoBehaviour
         return ((RectTransform)box.transform, text);
     }
 
-    // Unit arrow along +y, sized by the shader: the shaft runs from y = 0 to 1 with radius 0.5 and the head sits on it with
-    // radius 1. uv.y is 1 at the tip and 0 everywhere else, so the shader can stretch the shaft and keep the head's length.
-    // The arrows draw without depth, so the head comes after the shaft to cover it, and its base after both
+    /// <summary>
+    /// A unit arrow along +y that the shader stretches to each force.
+    /// Shaft, head, then head base, so they cover each other without depth
+    /// </summary>
     private static Mesh CreateArrowMesh()
     {
         const int Sides = 12;
@@ -305,7 +296,7 @@ public class Visualiser : MonoBehaviour
 
         for (int i = 0; i < Sides; i++)
         {
-            // Seen from outside, the next side is to the right. Triangles are clockwise from outside, Unity's front face
+            // Triangles are clockwise from outside
             Vector3 left = Radial(i, Sides), right = Radial(i + 1, Sides);
 
             int bottomLeft = Add(left * 0.5f, left, 0), bottomRight = Add(right * 0.5f, right, 0);
@@ -316,7 +307,6 @@ public class Visualiser : MonoBehaviour
             int tip = Add(Vector3.up, (leftNormal + rightNormal).normalized, 1);
             head.AddRange(new[] { tip, Add(right + Vector3.up, rightNormal, 0), Add(left + Vector3.up, leftNormal, 0) });
 
-            // Faces down, so it is clockwise from below
             headBase.AddRange(new[] { baseCentre, Add(left + Vector3.up, Vector3.down, 0), Add(right + Vector3.up, Vector3.down, 0) });
         }
 
@@ -348,7 +338,6 @@ public class Visualiser : MonoBehaviour
 #endif
     }
 
-    // Also runs before the object is destroyed and before scripts reload, so the command buffer is always released
     private void OnDisable()
     {
         Camera.onPreRender -= RecordArrows;

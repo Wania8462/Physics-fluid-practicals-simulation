@@ -2,9 +2,10 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 
-// WARNING: Indexer returns ref — do not hold onto a ref across any Add/Remove/Resize call, as resizing invalidates all refs.
-// WARNING: Remove(item) and RemoveAt(index) do not preserve order — the last element is swapped into the removed slot.
-// WARNING: IList<T>.Insert and IList<T>.RemoveAt DO preserve order (shift-based) to satisfy interface contract.
+/// <summary>
+/// List with a ref indexer. Don't hold a ref across Add/Remove.
+/// Remove swaps the last element in, so order isn't kept
+/// </summary>
 public class RefList<T> : IRefList<T>
 {
     private T[] _items;
@@ -15,6 +16,7 @@ public class RefList<T> : IRefList<T>
 
     private const int defaultSize = 4;
 
+    /// <summary>Starts with size default elements, not just room for them</summary>
     public RefList(int size = 0)
     {
         if (size == 0)
@@ -26,6 +28,7 @@ public class RefList<T> : IRefList<T>
         _size = size;
     }
 
+    /// <summary>Element by reference, so it can be changed in place</summary>
     public ref T this[int index]
     {
         get
@@ -65,6 +68,7 @@ public class RefList<T> : IRefList<T>
 
     bool ICollection<T>.IsReadOnly => false;
 
+    /// <summary>Adds a default element, to fill in through the indexer or Last()</summary>
     public void Add()
     {
         if (_size == _items.Length)
@@ -103,6 +107,7 @@ public class RefList<T> : IRefList<T>
         _size += count;
     }
 
+    /// <summary>The last element by reference</summary>
     public ref T Last()
     {
         if (_size == 0)
@@ -134,6 +139,7 @@ public class RefList<T> : IRefList<T>
         Array.Copy(_items, 0, array, arrayIndex, _size);
     }
 
+    /// <summary>Removes the first match by moving the last element into its place</summary>
     public bool Remove(T item)
     {
         for (int i = 0; i < _size; i++)
@@ -158,6 +164,7 @@ public class RefList<T> : IRefList<T>
         _items[_size] = default!;
     }
 
+    /// <summary>Removes an element by moving the last element into its place</summary>
     public void RemoveAt(int index)
     {
         if (index >= _size)
@@ -168,7 +175,6 @@ public class RefList<T> : IRefList<T>
         _items[_size] = default!;
     }
 
-    // Order-preserving insert to satisfy IList<T> contract.
     void IList<T>.Insert(int index, T item)
     {
         if ((uint)index > (uint)_size)
@@ -184,7 +190,6 @@ public class RefList<T> : IRefList<T>
         _size++;
     }
 
-    // Order-preserving removal to satisfy IList<T> contract.
     void IList<T>.RemoveAt(int index)
     {
         if ((uint)index >= (uint)_size)
@@ -202,10 +207,8 @@ public class RefList<T> : IRefList<T>
             action(_items[i]);
     }
 
-    /// <summary>
-    /// Allocates a new <c>T[]</c> and fills it by applying <paramref name="transform"/> to each element.
-    /// <para><b>Warning:</b> allocates every call — avoid in hot paths or per-frame update loops.</para>
-    /// </summary>
+    /// <summary>A new array with <paramref name="transform"/> applied to each element</summary>
+    /// <remarks>Allocates every call, avoid in hot paths or per-frame loops.</remarks>
     public T[] ForEach(Func<T, T> transform)
     {
         T[] copy = new T[_size];
@@ -214,10 +217,8 @@ public class RefList<T> : IRefList<T>
         return copy;
     }
 
-    /// <summary>
-    /// Allocates a new <c>TResult[]</c> and fills it by projecting each element via <paramref name="transform"/>.
-    /// <para><b>Warning:</b> allocates every call — avoid in hot paths or per-frame update loops.</para>
-    /// </summary>
+    /// <summary>A new array of each element passed through <paramref name="transform"/></summary>
+    /// <remarks>Allocates every call, avoid in hot paths or per-frame loops.</remarks>
     public TResult[] ForEach<TResult>(Func<T, TResult> transform)
     {
         TResult[] result = new TResult[_size];
@@ -226,11 +227,13 @@ public class RefList<T> : IRefList<T>
         return result;
     }
 
+    /// <summary>Sets every element to value</summary>
     public void Fill(T value)
     {
         Array.Fill(_items, value, 0, _size);
     }
 
+    /// <summary>Sets count elements from startIndex to value</summary>
     public void Fill(T value, int startIndex, int count)
     {
         Array.Fill(_items, value, startIndex, count);
@@ -269,9 +272,9 @@ public class RefList<T> : IRefList<T>
         return list;
     }
 
+    /// <summary>Enumerator that doesn't allocate</summary>
     public RefListEnumerator<T> GetEnumerator() => new(_items, _size);
 
-    // Explicit interface implementations for IEnumerable<T> / LINQ / etc.
     IEnumerator<T> IEnumerable<T>.GetEnumerator()
     {
         for (int i = 0; i < _size; i++)

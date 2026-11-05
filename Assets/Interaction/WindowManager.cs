@@ -3,12 +3,13 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
+/// <summary>Opens the simulation's windows and lets the user drag scales around</summary>
 public class WindowManager : MonoBehaviour
 {
-    // The fields of a scale window
+    /// <summary>Field indices of a scale window</summary>
     private const int ScaleWeight = 0, ScaleShownInWorld = 1;
 
-    // The New object window's density options, in kg/m³
+    /// <summary>New object densities, in kg/m³</summary>
     private static readonly (string name, float density)[] Materials =
     {
         ("Cork", 240),
@@ -25,10 +26,10 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private SimulationAPI api;
     [SerializeField] private RenderAPI renderApi;
 
-    // Each scale's window, indexed by the scale's number, null for a scale that isn't out
+    /// <summary>Each scale's window, null for a scale that isn't out</summary>
     private readonly Window[] scaleWindows = new Window[RigidBodies3D.MaxScales];
 
-    // The scale being dragged, -1 for none. It moves on a plane facing the camera through where it was grabbed
+    /// <summary>-1 when no scale is being dragged</summary>
     private int draggedScale = -1;
     private Plane dragPlane;
     private Vector3 dragOffset;
@@ -40,8 +41,7 @@ public class WindowManager : MonoBehaviour
         BringClickedWindowToFront();
     }
 
-    // Like an OS window manager, a clicked window comes to the front. Checked here rather than through UI events, so
-    // clicks the fields swallow still count
+    /// <summary>A clicked window comes to the front</summary>
     private void BringClickedWindowToFront()
     {
         if (!Input.GetMouseButtonDown(0))
@@ -52,20 +52,20 @@ public class WindowManager : MonoBehaviour
             window.transform.SetAsLastSibling();
     }
 
+    /// <summary>Opens or closes the side menu</summary>
     public void OnSideMenuClick()
     {
         sideMenu.SetActive(!sideMenu.activeSelf);
     }
 
-    // The simulation is stopped while the card is open
+    /// <summary>Opens or closes the settings card, pausing the simulation while it's open</summary>
     public void OnSettingsClick()
     {
         settingsCard.SetActive(!settingsCard.activeSelf);
         api.SetPaused(settingsCard.activeSelf);
     }
 
-    // Spawns a body and ties the window to it. The material fixes the density, so a new mass changes the volume and
-    // anything else changes the mass. The user can rename it, which only changes the title
+    /// <summary>Spawns a body with a window to edit its mass, volume, material and shape</summary>
     public void CreateObjectWindow()
     {
         const int Mass = 0, Volume = 1, Density = 2, Shape = 3;
@@ -80,7 +80,6 @@ public class WindowManager : MonoBehaviour
             new() { name = "Shape", fieldType = FieldType.Dropdown, options = Enum.GetNames(typeof(BodyShape3D)) }
         };
 
-        // Before the window, so a full simulation leaves no window without a body
         int id = api.AddBody((BodyShape3D)fields[Shape].selected, fields[Volume].value / 1000, fields[Mass].value);
         Window window = CreateWindow("New object", fields);
         window.Renamable = true;
@@ -108,6 +107,7 @@ public class WindowManager : MonoBehaviour
         window.Closed += () => api.RemoveBody(id);
     }
 
+    /// <summary>Window to edit the fluid's density and viscosity</summary>
     public void CreateFluidWindow()
     {
         Window window = CreateWindow("Fluid properties",
@@ -135,6 +135,7 @@ public class WindowManager : MonoBehaviour
         };
     }
 
+    /// <summary>Window to edit gravity</summary>
     public void CreateGravityWindow()
     {
         Window window = CreateWindow("Gravity properties",
@@ -150,8 +151,7 @@ public class WindowManager : MonoBehaviour
         window.FieldChanged += _ => api.SetGravity(window.fields[0].value);
     }
 
-    // One toggle per BodyForce, then one for their values, starting as they are drawn now. The resultant is the sum of the
-    // others, so it is never drawn alongside them
+    /// <summary>Toggles for which force arrows and values are drawn</summary>
     public void CreateVisualisationWindow()
     {
         const int Resultant = (int)BodyForce.Resultant;
@@ -190,8 +190,7 @@ public class WindowManager : MonoBehaviour
         };
     }
 
-    // Spawns the first scale that isn't out, or nothing once they all are. The window shows its reading, which is also
-    // written on the scale and, while Show in world is on, over it
+    /// <summary>Spawns the next scale with a window showing its reading</summary>
     public void CreateScaleWindow()
     {
         int scale = Array.FindIndex(scaleWindows, window => !window);
@@ -219,6 +218,7 @@ public class WindowManager : MonoBehaviour
         };
     }
 
+    /// <summary>Shows each scale's reading in its window and on the scale</summary>
     private void UpdateScales()
     {
         for (int scale = 0; scale < scaleWindows.Length; scale++)
@@ -234,7 +234,7 @@ public class WindowManager : MonoBehaviour
         }
     }
 
-    // Right mouse on a scale grabs it, the closest one under the cursor, and it follows the cursor until released
+    /// <summary>Right mouse drags a scale around</summary>
     private void DragScale()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
@@ -275,6 +275,7 @@ public class WindowManager : MonoBehaviour
         }
     }
 
+    /// <summary>Opens a window with these fields</summary>
     private Window CreateWindow(string title, params Field[] fields)
     {
         Window window = Instantiate(windowPrefab, new(1000, 500, 0), Quaternion.identity, canvas).GetComponent<Window>();
@@ -285,7 +286,7 @@ public class WindowManager : MonoBehaviour
         return window;
     }
 
-    // Dropping onto a lone window starts a group in its place, dropping onto a group joins it
+    /// <summary>Dropping a window onto another groups them</summary>
     private void Combine(Window dragged, Window target)
     {
         if (!target.IsGroup)
