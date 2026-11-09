@@ -25,6 +25,7 @@ public enum ColorblindFilter
     FilterB
 }
 
+/// <summary>App-wide settings chosen on the settings screen</summary>
 public static class AppSettings
 {
     public static Performace performace = Performace.Low;

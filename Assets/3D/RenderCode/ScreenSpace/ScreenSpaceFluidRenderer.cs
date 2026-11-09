@@ -2,21 +2,22 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+/// <summary>How the screen-space fluid looks</summary>
 [Serializable]
 public struct ScreenSpaceFluidSettings
 {
-    [Tooltip("Radius of the sphere drawn for each particle, in world units. About 0.6 times the rest spacing (2.5 in 3DSandbox), so neighbouring spheres overlap into one surface without looking blobby. Separate from the simulation's particleRadius, which would leave gaps")]
-    public float particleRenderRadius;
+    [Tooltip("Radius of the sphere drawn for each particle, in spawn spacings (PBF holds the fluid at that spacing). Above 0.71 the spheres close the gaps between particles, so the scene doesn't show through as specks")]
+    public float renderRadiusScale;
 
     [Header("Smoothing")]
-    [Tooltip("Radius of the depth and thickness smoothing in world units (3 standard deviations). A little more than the rest spacing (2.5 in 3DSandbox), so the bumps between neighbouring spheres are smoothed away")]
-    public float smoothingRadius;
+    [Tooltip("Radius of the depth and thickness smoothing, in spawn spacings (3 standard deviations). About 2, so the bumps between neighbouring spheres are smoothed away")]
+    public float smoothingRadiusScale;
     [Tooltip("Horizontal and vertical pass pairs of the depth smoothing. Each pair is two full-screen passes; 0 leaves the raw spheres")]
     [Range(0, 4)] public int smoothingIterations;
-    [Tooltip("Depth difference, in world units, over which the depth smoothing stops blending: taps whose raw depth differs by 3 times this get almost no weight. About the render radius, so bumps on one surface blend but separate sheets of fluid and body edges stay sharp")]
-    public float depthRangeSigma;
-    [Tooltip("Largest smoothing radius as a fraction of the screen height. Caps the cost when fluid is close to the camera; a fraction gives the same look at every resolution")]
-    [Range(0.002f, 0.03f)] public float maxScreenRadius;
+    [Tooltip("Depth difference, in spawn spacings, over which the depth smoothing stops blending: taps whose raw depth differs by 3 times this get almost no weight. About the render radius, so bumps on one surface blend but separate sheets of fluid and body edges stay sharp")]
+    public float depthRangeScale;
+    [Tooltip("Largest smoothing radius as a fraction of the screen height, up to 64 pixels. Caps the cost when fluid is close to the camera; a fraction gives the same look at every resolution")]
+    [Range(0.002f, 0.15f)] public float maxScreenRadius;
 
     [Header("Shading")]
     [Tooltip("Absorption per world unit of fluid for red, green and blue: the scene seen through t units of fluid is multiplied by exp(-t * extinction). The defaults let about 70% of red through the 31-unit-deep settled fluid in 3DSandbox and 5% through the 250-unit tank, so deeper fluid looks bluer")]
@@ -35,11 +36,10 @@ public struct ScreenSpaceFluidSettings
     public float thicknessDisplayScale;
 }
 
-// Draws the fluid as one smooth surface instead of billboards. Particles are drawn as spheres into eye-depth and
-// thickness textures, which are smoothed and then shaded over a copy of the scene by a full-screen pass. The commands are
-// re-recorded every frame into one command buffer that the camera runs after transparent objects
+/// <summary>Draws the fluid as one smooth, see-through surface instead of separate particles</summary>
 public class ScreenSpaceFluidRenderer : MonoBehaviour
 {
+    /// <summary>What the final pass shows: the shaded fluid, or one stage of it</summary>
     public enum DebugView
     {
         Composite,
@@ -50,10 +50,9 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         SmoothThickness
     }
 
-    // Eye depth where there is no fluid, FLUID_NO_DEPTH in FluidCommon.hlsl
+    /// <summary>Matches FLUID_NO_DEPTH in FluidCommon.hlsl</summary>
     public const float NoDepth = 1e7f;
 
-    // Names of the passes in FluidParticles.shader, FluidSmooth.shader and FluidComposite.shader
     private const string DepthPassName = "Depth";
     private const string ThicknessPassName = "Thickness";
     private const string BilateralHPassName = "BilateralH";
@@ -64,6 +63,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
     private static readonly int PositionsId = Shader.PropertyToID("Positions");
     private static readonly int ParticleRenderRadiusId = Shader.PropertyToID("particleRenderRadius");
+    private static readonly int ThicknessScaleId = Shader.PropertyToID("thicknessScale");
     private static readonly int SmoothingRadiusId = Shader.PropertyToID("smoothingRadius");
     private static readonly int DepthRangeSigmaId = Shader.PropertyToID("depthRangeSigma");
     private static readonly int MaxScreenRadiusId = Shader.PropertyToID("maxScreenRadius");
@@ -77,7 +77,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private static readonly int FluidInvProjId = Shader.PropertyToID("_FluidInvProj");
     private static readonly int FluidCamToWorldId = Shader.PropertyToID("_FluidCamToWorld");
 
-    // Temporary render textures. Each is also a global texture of the same name, which is how the shaders read it
+    /// <summary>Temporary textures, read by the shaders by name</summary>
     private static readonly int FluidDepthTexId = Shader.PropertyToID("_FluidDepthTex");
     private static readonly int FluidDepthTempId = Shader.PropertyToID("_FluidDepthTemp");
     private static readonly int FluidThicknessTexId = Shader.PropertyToID("_FluidThicknessTex");
@@ -96,11 +96,11 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     [SerializeField] private Shader compositeShader;
     [SerializeField] private ScreenSpaceFluidSettings settings = new()
     {
-        particleRenderRadius = 1.5f,
-        smoothingRadius = 3,
+        renderRadiusScale = 0.75f,
+        smoothingRadiusScale = 2f,
         smoothingIterations = 2,
-        depthRangeSigma = 1.5f,
-        maxScreenRadius = 0.02f,
+        depthRangeScale = 0.75f,
+        maxScreenRadius = 0.06f,
         extinction = new(0.012f, 0.005f, 0.0016f),
         refractionStrength = 0.25f,
         maxRefractionOffset = 0.03f,
@@ -121,11 +121,17 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private int gaussVPass;
     private int compositePass;
     private int numParticles;
+    private float spacing;
     private BodyRenderer bodyRenderer;
+    private Visualiser visualiser;
 
-    public void Setup(SimulationManager sim, BodyRenderer bodyRenderer)
+    /// <summary>Creates the materials and binds the particle positions</summary>
+    /// <param name="visualiser">Optional, draws the depth meter rays and rulers</param>
+    public void Setup(SimulationManager sim, BodyRenderer bodyRenderer, Visualiser visualiser)
     {
-        // Camera.AddCommandBuffer does nothing under a scriptable render pipeline, so the fluid would silently not draw
+        this.visualiser = visualiser;
+
+        // Only works in the Built-in Render Pipeline
         if (GraphicsSettings.currentRenderPipeline != null)
             throw new InvalidOperationException($"it needs the Built-in Render Pipeline, but {GraphicsSettings.currentRenderPipeline.name} is active");
 
@@ -145,16 +151,19 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
         particleMaterial.SetBuffer(PositionsId, sim.Buffers["Positions"]);
         numParticles = sim.numParticles;
+        spacing = sim.Spacing;
         this.bodyRenderer = bodyRenderer;
     }
 
-    // Records this frame's commands. No camera matrices are recorded: the draws use the camera's own matrices when the
-    // buffer runs, because the camera can still move this frame after the simulation raises StepFinished
+    /// <summary>Records this frame's fluid rendering commands</summary>
     public void Draw()
     {
-        particleMaterial.SetFloat(ParticleRenderRadiusId, settings.particleRenderRadius);
-        smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadius);
-        smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeSigma);
+        float renderRadius = settings.renderRadiusScale * spacing;
+        particleMaterial.SetFloat(ParticleRenderRadiusId, renderRadius);
+        // Each particle adds its real volume (one spacing cube) to the thickness, whatever size it's drawn
+        particleMaterial.SetFloat(ThicknessScaleId, Mathf.Pow(spacing, 3) / (4f / 3f * Mathf.PI * Mathf.Pow(renderRadius, 3)));
+        smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadiusScale * spacing);
+        smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeScale * spacing);
         smoothMaterial.SetFloat(MaxScreenRadiusId, settings.maxScreenRadius);
         compositeMaterial.SetVector(ExtinctionId, settings.extinction);
         compositeMaterial.SetFloat(RefractionStrengthId, settings.refractionStrength);
@@ -165,29 +174,25 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
         cmd.Clear();
 
-        // Every draw comes before the first Blit, because Blit replaces the camera's projection matrix with its own
+        // Depth of the nearest fluid surface at each pixel
         cmd.BeginSample("SSF Depth");
         cmd.GetTemporaryRT(FluidDepthTexId, -1, -1, 24, FilterMode.Point, RenderTextureFormat.RGFloat);
         cmd.SetRenderTarget(FluidDepthTexId);
         cmd.ClearRenderTarget(true, true, NoDepthColor);
-        bodyRenderer.DrawDepth(cmd);
+        DrawOccluders();
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, depthPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Depth");
 
-        // Half resolution (-2 is half the camera size): thickness varies smoothly, so a quarter of the pixels loses little
-        // and saves most of the additive overdraw. The bodies go into this target's own depth buffer too, or fluid behind a
-        // body would add to the thickness of the fluid in front of it
+        // How much fluid each pixel looks through, at half resolution to save time
         cmd.BeginSample("SSF Thickness");
         cmd.GetTemporaryRT(FluidThicknessTexId, -2, -2, 24, FilterMode.Bilinear, RenderTextureFormat.RHalf);
         cmd.SetRenderTarget(FluidThicknessTexId);
         cmd.ClearRenderTarget(true, true, Color.clear);
-        bodyRenderer.DrawDepth(cmd);
+        DrawOccluders();
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, thicknessPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Thickness");
 
-        // Each iteration blurs horizontally into the temporary and vertically back, so the result ends in _FluidDepthTex.
-        // The full-screen passes read their sources by name, not through Blit's _MainTex, which gave FluidSmooth's passes
-        // scene colours in Play mode. Blit still provides the target and the full-screen quad
+        // Smooth the depth so the particles blend into one surface
         cmd.BeginSample("SSF Smooth depth");
         cmd.GetTemporaryRT(FluidDepthTempId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.RGFloat);
         for (int i = 0; i < settings.smoothingIterations; i++)
@@ -198,7 +203,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidDepthTempId);
         cmd.EndSample("SSF Smooth depth");
 
-        // Skipped in the Thickness view, which shows thickness before smoothing
         if (settings.debugView != DebugView.Thickness)
         {
             cmd.BeginSample("SSF Smooth thickness");
@@ -209,7 +213,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
             cmd.EndSample("SSF Smooth thickness");
         }
 
-        // The composite reads the scene behind the fluid, so the camera target is copied before being drawn over
+        // Shade the fluid over a copy of the scene
         cmd.BeginSample("SSF Composite");
         cmd.GetTemporaryRT(FluidSceneTexId, -1, -1, 0, FilterMode.Bilinear, RenderTextureFormat.DefaultHDR);
         cmd.Blit(BuiltinRenderTextureType.CameraTarget, FluidSceneTexId);
@@ -221,8 +225,16 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidSceneTexId);
     }
 
-    // Blit passes can't use Unity's camera matrices, so the ones they need are set as globals right before this camera
-    // renders, after everything that moves it this frame has run
+    /// <summary>Writes the depth of everything that hides fluid behind it</summary>
+    private void DrawOccluders()
+    {
+        bodyRenderer.DrawDepth(cmd);
+
+        if (visualiser != null)
+            visualiser.DrawMarkerDepth(cmd);
+    }
+
+    /// <summary>Gives the full-screen passes the camera matrices, which Blit hides from them</summary>
     private void SetCameraGlobals(Camera camera)
     {
         if (camera != cam)
@@ -234,7 +246,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         Shader.SetGlobalMatrix(FluidCamToWorldId, cam.cameraToWorldMatrix);
     }
 
-    // A misspelt name gives -1, which would draw every pass of the shader
+    /// <summary>Throws on a misspelt pass name instead of drawing every pass</summary>
     private static int FindPass(Material material, string name)
     {
         int pass = material.FindPass(name);
@@ -243,7 +255,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         return pass;
     }
 
-    // RenderManager enables this only in screen-space mode, so billboard mode has no command buffer on the camera
     private void OnEnable()
     {
         cmd = new CommandBuffer { name = "Screen Space Fluid" };
@@ -252,7 +263,6 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         Camera.onPreRender += SetCameraGlobals;
     }
 
-    // Also runs before the object is destroyed and before scripts reload, so the buffer is always released
     private void OnDisable()
     {
         Camera.onPreRender -= SetCameraGlobals;

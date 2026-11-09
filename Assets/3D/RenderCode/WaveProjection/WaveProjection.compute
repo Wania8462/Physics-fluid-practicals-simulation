@@ -1,0 +1,127 @@
+#pragma kernel ClearCounts
+#pragma kernel Deposit
+#pragma kernel ResolveHeight
+#pragma kernel BlurX
+#pragma kernel BlurY
+#pragma kernel Light
+
+// Particle weights are whole numbers so they can be added atomically
+static const float WeightScale = 1024.0;
+
+StructuredBuffer<float4> Positions;
+RWStructuredBuffer<uint> Counts;
+
+RWTexture2D<float> Heights;
+RWTexture2D<float> BlurTemp;
+RWTexture2D<float> Blurred;
+RWTexture2D<float> LightMap;
+
+uint numParticles;
+uint gridWidth;
+uint gridHeight;
+float2 gridOrigin;
+float2 cellSize;
+
+float particleHeight;  // Height one particle adds to a column
+float temporalBlend;
+int blurRadiusX;
+int blurRadiusY;
+float2 blurFalloff;
+float lensGain;
+float minFocus;
+
+void AddWeight(int2 cell, float weight)
+{
+    cell = clamp(cell, int2(0, 0), int2(gridWidth, gridHeight) - 1);
+    InterlockedAdd(Counts[cell.y * gridWidth + cell.x], (uint)(weight * WeightScale + 0.5));
+}
+
+float BlurredHeightAt(int x, int y)
+{
+    return Blurred[uint2(clamp(x, 0, (int)gridWidth - 1), clamp(y, 0, (int)gridHeight - 1))];
+}
+
+[numthreads(64,1,1)]
+void ClearCounts (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gridWidth * gridHeight) return;
+
+    Counts[id.x] = 0;
+}
+
+// Shares each particle between the four nearest columns, so counts change smoothly as it moves
+[numthreads(64,1,1)]
+void Deposit (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    float2 grid = (Positions[id.x].xz - gridOrigin) / cellSize - 0.5;
+    int2 lower = (int2)floor(grid);
+    float2 t = grid - lower;
+
+    AddWeight(lower, (1 - t.x) * (1 - t.y));
+    AddWeight(lower + int2(1, 0), t.x * (1 - t.y));
+    AddWeight(lower + int2(0, 1), (1 - t.x) * t.y);
+    AddWeight(lower + int2(1, 1), t.x * t.y);
+}
+
+// Height of the water in each column, averaged over time to remove particle jitter
+[numthreads(8,8,1)]
+void ResolveHeight (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gridWidth || id.y >= gridHeight) return;
+
+    float height = Counts[id.y * gridWidth + id.x] / WeightScale * particleHeight;
+
+    // The texture holds nothing valid until it's first written
+    Heights[id.xy] = temporalBlend >= 1 ? height : lerp(Heights[id.xy], height, temporalBlend);
+}
+
+[numthreads(8,8,1)]
+void BlurX (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gridWidth || id.y >= gridHeight) return;
+
+    float sum = 0;
+    float weightSum = 0;
+    for (int x = -blurRadiusX; x <= blurRadiusX; x++)
+    {
+        float weight = exp(x * x * blurFalloff.x);
+        sum += Heights[uint2(clamp((int)id.x + x, 0, (int)gridWidth - 1), id.y)] * weight;
+        weightSum += weight;
+    }
+
+    BlurTemp[id.xy] = sum / weightSum;
+}
+
+[numthreads(8,8,1)]
+void BlurY (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gridWidth || id.y >= gridHeight) return;
+
+    float sum = 0;
+    float weightSum = 0;
+    for (int y = -blurRadiusY; y <= blurRadiusY; y++)
+    {
+        float weight = exp(y * y * blurFalloff.y);
+        sum += BlurTemp[uint2(id.x, clamp((int)id.y + y, 0, (int)gridHeight - 1))] * weight;
+        weightSum += weight;
+    }
+
+    Blurred[id.xy] = sum / weightSum;
+}
+
+// How much light reaches the plane under each column. Crests curve down, so they focus light and read above 1
+[numthreads(8,8,1)]
+void Light (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gridWidth || id.y >= gridHeight) return;
+
+    int x = id.x;
+    int y = id.y;
+    float centre = BlurredHeightAt(x, y);
+    float curveX = (BlurredHeightAt(x - 1, y) + BlurredHeightAt(x + 1, y) - 2 * centre) / (cellSize.x * cellSize.x);
+    float curveY = (BlurredHeightAt(x, y - 1) + BlurredHeightAt(x, y + 1) - 2 * centre) / (cellSize.y * cellSize.y);
+
+    LightMap[id.xy] = 1 / max(minFocus, 1 + lensGain * (curveX + curveY));
+}

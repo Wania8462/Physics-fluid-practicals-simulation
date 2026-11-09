@@ -2,8 +2,7 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
 {
     SubShader
     {
-        // Every particle is a camera-facing quad shaded as a sphere. ScreenSpaceFluidRenderer draws them with
-        // DrawProcedural, 6 vertices per particle and no mesh
+        // Draws each particle as a sphere, into the depth or the thickness texture
         Cull Off
 
         CGINCLUDE
@@ -11,8 +10,8 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
 
         StructuredBuffer<float4> Positions;
         float particleRenderRadius;
+        float thicknessScale;  // Particle volume / sphere volume
 
-        // The quad's two triangles, as corners of a square from -1 to 1
         static const float2 Corners[6] =
         {
             float2(-1, -1), float2(1, -1), float2(-1, 1),
@@ -31,12 +30,11 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
             float3 centre = Positions[instanceID].xyz;
             float2 corner = Corners[vertexID];
 
-            // Offsetting the corners in view space keeps the quad facing the camera
             float3 viewCentre = mul(UNITY_MATRIX_V, float4(centre, 1)).xyz;
             float3 viewPosition = viewCentre + float3(corner * particleRenderRadius, 0);
 
             v2f o;
-            // A particle with a NaN or infinite position is moved outside clip space, so no NaN depth reaches the smoothing
+            // Broken (NaN) particles are moved off screen so they don't spoil the image
             o.pos = all(isfinite(centre)) ? mul(UNITY_MATRIX_P, float4(viewPosition, 1)) : float4(2, 2, 2, 1);
             o.corner = corner;
             o.centreEyeDepth = -viewCentre.z;
@@ -44,10 +42,10 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
         }
         ENDCG
 
-        // Eye depth of the nearest sphere surface, in both channels: R gets smoothed, G keeps the raw depth
+        // Depth of the nearest sphere. R gets smoothed, G keeps the raw depth
         Pass
         {
-            Name "Depth"    // ScreenSpaceFluidRenderer.DepthPassName
+            Name "Depth"
             ZWrite On
             ZTest LEqual
 
@@ -60,8 +58,6 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
                 float r2 = dot(i.corner, i.corner);
                 clip(1 - r2);
 
-                // The sphere surface bulges towards the camera from the quad. Clamped to the near plane, so a sphere around
-                // the camera doesn't give a depth at or behind it
                 float eyeDepth = max(i.centreEyeDepth - sqrt(1 - r2) * particleRenderRadius, _ProjectionParams.y);
                 depth = EyeDepthToRaw(eyeDepth);
                 return float4(eyeDepth, eyeDepth, 0, 0);
@@ -69,11 +65,10 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
             ENDCG
         }
 
-        // Length of the view ray inside each sphere, added up over every particle in front of the bodies. It is in world
-        // units, so the absorption coefficients are per world unit
+        // Thickness: how much fluid each pixel looks through
         Pass
         {
-            Name "Thickness"    // ScreenSpaceFluidRenderer.ThicknessPassName
+            Name "Thickness"
             ZWrite Off
             ZTest LEqual
             Blend One One
@@ -84,9 +79,8 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
 
             float4 frag(v2f i) : SV_Target
             {
-                // Zero outside the circle, so no discard is needed
                 float chord = 2 * sqrt(saturate(1 - dot(i.corner, i.corner))) * particleRenderRadius;
-                return float4(chord, 0, 0, 0);
+                return float4(chord * thicknessScale, 0, 0, 0);
             }
             ENDCG
         }

@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
+/// <summary>Menu buttons that switch scenes</summary>
 public class ChangeScenes : MonoBehaviour
 {
     public void BuoyancyPractical()
@@ -20,6 +21,6 @@ public class ChangeScenes : MonoBehaviour
     
     public void MainMenu()
     {
-        SceneManager.LoadScene("SettingsScene");
+        SceneManager.LoadScene("MainMenu");
     }
 }

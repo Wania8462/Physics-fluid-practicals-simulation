@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 
+/// <summary>Settings screen: ties its controls to AppSettings</summary>
 public class SettingsScript : MonoBehaviour
 {
     [SerializeField] private Slider slider;
