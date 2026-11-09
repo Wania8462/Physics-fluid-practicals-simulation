@@ -218,6 +218,7 @@ flowchart TD
 | **Fluid properties** | Density (kg/m³), Viscosity (mPa·s) | `SetDensity`, `SetViscosity` |
 | **Gravity properties** | Gravity (m/s²) | `SetGravity` |
 | **Visualisation** | A toggle per `BodyForce`, plus Values | `RenderAPI.DrawForce` / `DrawForceValues`. *Resultant* and the individual forces turn each other off |
+| **Ruler N** | Length (readout, cm) | Puts a flat box in front of the camera, up to `Visualiser.MaxRulers`, marked every centimetre and numbered every 5, counted from its start end. It's only drawn, the simulation doesn't know about it. Right-dragging near an end moves that end with the other fixed, so it stretches or shrinks. Right-dragging the middle moves the whole ruler. Closing removes it |
 | **Stopwatch** | Time (readout, s), Start/Stop and Reset buttons | Counts simulation time, so it stops while paused. Reset also stops it. Any number can be open |
 | **Depth meter N** | Height (readout, cm), Height over time (graph, length set by `depthGraphSeconds`), Second ray | Adds a vertical red ray from the tank's floor to its top, which drags across the floor. Second ray adds a green one, drawn in the same graph, and each window owns two of the `DepthMeters.MaxMeters` rays. `DepthMeters` reads the particle positions back every 0.1 simulation seconds and turns the amount of fluid in a small column around the ray into a height, so it reads the volume-equivalent height. Closing removes the meter |
 | **Wave generator** | On, Frequency (Hz of simulation time), Amplitude (cm) | Only one can be open. Opening adds the dipper, a full-width fixed box against the -x wall that lowers into the water. It's a `WaveDipper` component on the `SimulationManager` object, only in scenes with waves, and moves on `StepStarting` each simulation step, easing its amplitude at `easeSpeed`. The amplitude is capped so its acceleration stays under `maxAcceleration` × gravity, and it sits `clearance` + amplitude deep so its bottom stays under the water. Closing removes it |
@@ -235,7 +236,7 @@ flowchart TD
 |---|---|---|
 | Mouse, WASD, Q/E, Shift | Look, move, down/up, faster | `CameraController` |
 | Esc | Toggle camera mode (cursor locked) / UI mode (cursor free). Clicking empty space in UI mode goes back to camera mode | `CameraController` |
-| Right mouse (held) | Drag a scale, object or depth meter ray. Scroll while dragging to move it further (up) or closer (down) | `WindowManager` |
+| Right mouse (held) | Drag a scale, object, depth meter ray or ruler. Scroll while dragging to move it further (up) or closer (down) | `WindowManager` |
 | Space / → / PgDn | Pause / step once / step 10× | `SimulationManager` |
 | R | Rebuild the simulation | `SimulationManager` |
 

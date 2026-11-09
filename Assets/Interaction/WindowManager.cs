@@ -20,6 +20,37 @@ public class WindowManager : MonoBehaviour
     private const int StopwatchTime = 0, StopwatchButtons = 1;
     private const int StartStopButton = 0;
 
+    /// <summary>Size of a new ruler and of its cross-section, and its shortest length, in sim units</summary>
+    private const float RulerStartLength = 100, RulerWidth = 12, RulerThickness = 1.5f, RulerMinLength = 5;
+
+    private enum RulerPart
+    {
+        Start,
+        End,
+        Middle
+    }
+
+    /// <summary>A ruler between two points. Only drawn, the simulation doesn't know about it</summary>
+    private class Ruler
+    {
+        public Window window;
+        public int slot;
+        public Vector3 start, end;
+
+        public Vector3 Middle => (start + end) / 2;
+        public float Length => Vector3.Distance(start, end);
+
+        /// <summary>Along the ruler, with its flat side up unless it's nearly vertical</summary>
+        public Quaternion Rotation
+        {
+            get
+            {
+                Vector3 along = (end - start).normalized;
+                return Quaternion.LookRotation(along, Mathf.Abs(along.y) > 0.99f ? Vector3.forward : Vector3.up);
+            }
+        }
+    }
+
     /// <summary>One open stopwatch</summary>
     private class Stopwatch
     {
@@ -54,6 +85,10 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private float dragScrollStep = 10f;
     [Tooltip("Width and height of the invisible box for grabbing a depth meter's ray, in sim units. Much thicker than the ray so it's easy to hit")]
     [SerializeField] private float depthRayGrabSize = 16f;
+    [Tooltip("Width and height of the invisible box for grabbing a ruler, in sim units. Thicker than the ruler so it's easy to hit")]
+    [SerializeField] private float rulerGrabSize = 16f;
+    [Tooltip("How far in from each end of a ruler grabbing it moves that end, in sim units. At most a third of the ruler")]
+    [SerializeField] private float rulerEndGrabLength = 25f;
     [Tooltip("Seconds of simulation time the depth meter graphs show")]
     [SerializeField, Range(5, DepthMeters.MaxHistory)] private float depthGraphSeconds = 30f;
 
@@ -72,6 +107,16 @@ public class WindowManager : MonoBehaviour
     private int shownDepthRevision = -1;
 
     private readonly List<Stopwatch> stopwatches = new();
+
+    /// <summary>Each open ruler, null for a free slot</summary>
+    private readonly Ruler[] rulers = new Ruler[Visualiser.MaxRulers];
+    /// <summary>The ruler being dragged, null when there's none, and which part of it</summary>
+    private Ruler draggedRuler;
+    private RulerPart draggedRulerPart;
+    /// <summary>Where the spot held on a ruler dragged by its middle is, from the ruler's middle</summary>
+    private Vector3 rulerHeldFromMiddle;
+    /// <summary>How far the spot held on a ruler dragged by an end is from that end</summary>
+    private float rulerHeldFromEnd;
 
     /// <summary>Id of the body being dragged, -1 when there's none</summary>
     private int draggedBody = -1;
@@ -416,6 +461,148 @@ public class WindowManager : MonoBehaviour
         }
     }
 
+    /// <summary>Puts a ruler in front of the camera, with a window showing its length</summary>
+    public void CreateRulerWindow()
+    {
+        int slot = Array.FindIndex(rulers, open => open == null);
+        if (slot < 0)
+            return;
+
+        Vector3 middle = api.GetSpawnPosition();
+        Vector3 halfLength = Camera.main.transform.right * (RulerStartLength / 2);
+
+        Ruler ruler = new()
+        {
+            slot = slot,
+            start = middle - halfLength,
+            end = middle + halfLength,
+            window = CreateWindow($"Ruler {slot + 1}", new Field { name = "Length", fieldType = FieldType.Readout, unit = "cm", format = "0.0" })
+        };
+        rulers[slot] = ruler;
+        ShowRuler(ruler);
+
+        ruler.window.Closed += () =>
+        {
+            renderApi.HideRuler(slot);
+            rulers[slot] = null;
+
+            if (draggedRuler == ruler)
+                draggedRuler = null;
+        };
+    }
+
+    /// <summary>Sends a ruler to be drawn and writes its length to its window</summary>
+    private void ShowRuler(Ruler ruler)
+    {
+        const float CentimetresPerMetre = 100;
+
+        renderApi.ShowRuler(ruler.slot, ruler.start, ruler.Rotation, new Vector3(RulerWidth, RulerThickness, ruler.Length), api.FromMetres(1 / CentimetresPerMetre));
+
+        Field length = ruler.window.fields[0];
+        length.value = api.ToMetres(ruler.Length) * CentimetresPerMetre;
+        ruler.window.SetField(0, length);
+    }
+
+    /// <summary>Whether a mouse ray hits the ruler's grab box, and which part of the ruler is there</summary>
+    private bool TryHitRuler(Ruler ruler, Ray ray, out float distance, out RulerPart part)
+    {
+        part = RulerPart.Middle;
+
+        // In the ruler's own space its grab box lines up with the axes
+        Matrix4x4 toRuler = Matrix4x4.TRS(ruler.Middle, ruler.Rotation, Vector3.one).inverse;
+        Ray localRay = new(toRuler.MultiplyPoint3x4(ray.origin), toRuler.MultiplyVector(ray.direction));
+
+        float halfLength = ruler.Length / 2;
+        Vector3 size = new(Mathf.Max(RulerWidth, rulerGrabSize), Mathf.Max(RulerThickness, rulerGrabSize), ruler.Length + rulerGrabSize);
+        if (!new Bounds(Vector3.zero, size).IntersectRay(localRay, out distance))
+            return false;
+
+        float along = localRay.GetPoint(distance).z;
+        float endZone = Mathf.Min(rulerEndGrabLength, ruler.Length / 3);
+
+        if (along <= -halfLength + endZone)
+            part = RulerPart.Start;
+        else if (along >= halfLength - endZone)
+            part = RulerPart.End;
+
+        return true;
+    }
+
+    /// <summary>Remembers which spot on the ruler is being held</summary>
+    /// <returns>The point on the mouse ray level with that spot</returns>
+    private Vector3 HoldDraggedRuler(Ray ray)
+    {
+        Ruler ruler = draggedRuler;
+        Vector3 held = ClosestPointOnRuler(ruler, ray);
+
+        rulerHeldFromMiddle = held - ruler.Middle;
+        rulerHeldFromEnd = Vector3.Distance(held, draggedRulerPart == RulerPart.Start ? ruler.start : ruler.end);
+
+        return ray.GetPoint(Vector3.Dot(held - ray.origin, ray.direction));
+    }
+
+    /// <summary>The point on the ruler's centre line nearest to a ray</summary>
+    private static Vector3 ClosestPointOnRuler(Ruler ruler, Ray ray)
+    {
+        Vector3 along = ruler.end - ruler.start;
+        Vector3 fromRay = ruler.start - ray.origin;
+
+        float lengthSquared = along.sqrMagnitude;
+        float facing = Vector3.Dot(along, ray.direction);
+        float denominator = lengthSquared - facing * facing;
+
+        // A ruler pointing straight along the ray has no nearest point, so use its middle
+        float t = denominator < 1e-4f ? 0.5f : (facing * Vector3.Dot(ray.direction, fromRay) - Vector3.Dot(along, fromRay)) / denominator;
+        return ruler.start + Mathf.Clamp01(t) * along;
+    }
+
+    /// <summary>Where the spot held on the dragged ruler is now</summary>
+    private Vector3 RulerHeldPosition()
+    {
+        Ruler ruler = draggedRuler;
+        if (draggedRulerPart == RulerPart.Middle)
+            return ruler.Middle + rulerHeldFromMiddle;
+
+        bool start = draggedRulerPart == RulerPart.Start;
+        Vector3 moving = start ? ruler.start : ruler.end;
+        Vector3 anchored = start ? ruler.end : ruler.start;
+        return moving + (anchored - moving).normalized * rulerHeldFromEnd;
+    }
+
+    /// <summary>Puts the held spot at the target. An end turns and stretches about the fixed end, a middle moves the whole ruler</summary>
+    private void MoveDraggedRuler(Vector3 target)
+    {
+        Ruler ruler = draggedRuler;
+
+        switch (draggedRulerPart)
+        {
+            case RulerPart.Start:
+                ruler.start = RulerEndThrough(target, ruler.end);
+                break;
+
+            case RulerPart.End:
+                ruler.end = RulerEndThrough(target, ruler.start);
+                break;
+
+            default:
+                Vector3 halfLength = (ruler.end - ruler.start) / 2;
+                Vector3 middle = target - rulerHeldFromMiddle;
+                ruler.start = middle - halfLength;
+                ruler.end = middle + halfLength;
+                break;
+        }
+
+        ShowRuler(ruler);
+    }
+
+    /// <summary>Where the dragged end goes so the ruler runs from the fixed end through the held spot</summary>
+    private Vector3 RulerEndThrough(Vector3 held, Vector3 fixedEnd)
+    {
+        Vector3 offset = held - fixedEnd;
+        Vector3 direction = offset == Vector3.zero ? Vector3.right : offset.normalized;
+        return fixedEnd + direction * Mathf.Max(offset.magnitude + rulerHeldFromEnd, RulerMinLength);
+    }
+
     /// <summary>Window with a stopwatch that counts simulation time</summary>
     public void CreateStopwatchWindow()
     {
@@ -521,10 +708,16 @@ public class WindowManager : MonoBehaviour
         }
     }
 
-    /// <summary>Where the dragged depth meter or body is now</summary>
-    private Vector3 DraggedPosition() => draggedMeter >= 0 ? api.GetDepthMeterPosition(draggedMeter) : api.GetBodyPosition(draggedBody);
+    /// <summary>Where the spot held on the dragged ruler, the depth meter or the body is now</summary>
+    private Vector3 DraggedPosition()
+    {
+        if (draggedRuler != null)
+            return RulerHeldPosition();
 
-    /// <summary>Right mouse drags a scale, object or depth meter around, the scroll wheel moves it nearer or further</summary>
+        return draggedMeter >= 0 ? api.GetDepthMeterPosition(draggedMeter) : api.GetBodyPosition(draggedBody);
+    }
+
+    /// <summary>Right mouse drags a scale, object, depth meter or ruler around, the scroll wheel moves it nearer or further</summary>
     private void DragBody()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
@@ -553,19 +746,31 @@ public class WindowManager : MonoBehaviour
                 }
             }
 
-            if (draggedBody >= 0 || draggedMeter >= 0)
+            foreach (Ruler ruler in rulers)
             {
-                Vector3 grabbed = ray.GetPoint(nearest);
+                if (ruler != null && TryHitRuler(ruler, ray, out float distance, out RulerPart part) && distance < nearest)
+                {
+                    nearest = distance;
+                    draggedBody = -1;
+                    draggedMeter = -1;
+                    draggedRuler = ruler;
+                    draggedRulerPart = part;
+                }
+            }
+
+            if (draggedBody >= 0 || draggedMeter >= 0 || draggedRuler != null)
+            {
+                Vector3 grabbed = draggedRuler != null ? HoldDraggedRuler(ray) : ray.GetPoint(nearest);
                 dragPlane = new Plane(-Camera.main.transform.forward, grabbed);
                 dragOffset = DraggedPosition() - grabbed;
             }
         }
 
-        if (draggedBody < 0 && draggedMeter < 0)
+        if (draggedBody < 0 && draggedMeter < 0 && draggedRuler == null)
             return;
 
-        // Closing the window removes it mid-drag
-        bool removed = draggedMeter >= 0 ? !api.HasDepthMeter(draggedMeter) : !api.HasBody(draggedBody);
+        // Closing the window removes it mid-drag. A closed ruler has already cleared itself
+        bool removed = draggedRuler == null && (draggedMeter >= 0 ? !api.HasDepthMeter(draggedMeter) : !api.HasBody(draggedBody));
         if (!Input.GetMouseButton(1) || removed)
         {
             if (draggedBody >= 0)
@@ -573,6 +778,7 @@ public class WindowManager : MonoBehaviour
 
             draggedBody = -1;
             draggedMeter = -1;
+            draggedRuler = null;
             return;
         }
 
@@ -585,7 +791,9 @@ public class WindowManager : MonoBehaviour
             return;
 
         Vector3 target = ray.GetPoint(enter) + dragOffset;
-        if (draggedMeter >= 0)
+        if (draggedRuler != null)
+            MoveDraggedRuler(target);
+        else if (draggedMeter >= 0)
             api.MoveDepthMeter(draggedMeter, target.x, target.z);
         else
             api.MoveBody(draggedBody, target);

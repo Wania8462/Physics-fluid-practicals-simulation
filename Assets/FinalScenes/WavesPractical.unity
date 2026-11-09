@@ -4921,6 +4921,7 @@ MonoBehaviour:
   depthLineWidth: 2
   depthRayColor: {r: 1, g: 0, b: 0, a: 1}
   secondDepthRayColor: {r: 0, g: 1, b: 0, a: 1}
+  rulerColor: {r: 1, g: 0.85, b: 0.3, a: 1}
   depthRayThickness: 1.5
 --- !u!114 &1018029496
 MonoBehaviour:
@@ -5258,6 +5259,8 @@ MonoBehaviour:
   renderApi: {fileID: 1018029501}
   dragScrollStep: 10
   depthRayGrabSize: 16
+  rulerGrabSize: 16
+  rulerEndGrabLength: 25
   depthGraphSeconds: 10
 --- !u!114 &1109532835
 MonoBehaviour:
@@ -8830,7 +8833,7 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1109532834}
         m_TargetAssemblyTypeName: WindowManager, Assembly-CSharp
-        m_MethodName: CreateVisualisationWindow
+        m_MethodName: CreateRulerWindow
         m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}

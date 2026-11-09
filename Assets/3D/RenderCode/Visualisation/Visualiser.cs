@@ -14,9 +14,34 @@ public enum BodyForce
     Resultant
 }
 
+/// <summary>Where a ruler is and how far apart its marks are</summary>
+internal struct RulerDrawing
+{
+    /// <summary>Places, turns and sizes a unit cube</summary>
+    public Matrix4x4 body;
+    public Vector3 start;
+    public Quaternion rotation;
+    /// <summary>Width, thickness and length, in sim units</summary>
+    public Vector3 size;
+    /// <summary>Length of 1 cm, in sim units</summary>
+    public float centimetre;
+}
+
 /// <summary>Draws force arrows and values on the bodies, and the scale readings</summary>
 public class Visualiser : MonoBehaviour
 {
+    public const int MaxRulers = 4;
+
+    /// <summary>Small gap so the marks don't flicker against the ruler, in sim units</summary>
+    private const float RulerMarkGap = 0.05f;
+    private const float RulerMarkHalfWidth = 0.15f;
+    /// <summary>A number every this many marks</summary>
+    private const int RulerNumberInterval = 5;
+    /// <summary>Size of each number's box along and across the ruler, in sim units</summary>
+    private const float RulerNumberWidth = 8, RulerNumberHeight = 4.5f;
+    /// <summary>Space kept between a number and the end of the ruler, in sim units</summary>
+    private const float RulerNumberEndMargin = 0.5f;
+
     private const int ArrowsPerBody = 4;
     private static readonly Vector2 ValuePadding = new(8, 4);
     /// <summary>Small gap so the side text doesn't flicker against the base</summary>
@@ -53,6 +78,8 @@ public class Visualiser : MonoBehaviour
     [SerializeField] private float depthLineWidth = 2;
     [SerializeField] private Color depthRayColor = Color.red;
     [SerializeField] private Color secondDepthRayColor = Color.green;
+    [SerializeField] private Color rulerColor = new(1, 0.85f, 0.3f);
+    [SerializeField] private Color rulerMarkColor = Color.black;
     [Tooltip("Thickness of the depth meter rays, in sim units")]
     [SerializeField] private float depthRayThickness = 1.5f;
 
@@ -64,6 +91,8 @@ public class Visualiser : MonoBehaviour
     internal bool showDepthLines;
     /// <summary>Hides the arrows, values and scale readings while another view replaces the scene</summary>
     internal bool hidden;
+    /// <summary>Each ruler to draw, null for a ruler that isn't out</summary>
+    internal readonly RulerDrawing?[] rulers = new RulerDrawing?[MaxRulers];
     /// <summary>Centre and length of each depth meter's ray, null for a meter that isn't out. Odd indices are second rays</summary>
     internal readonly Vector4?[] depthRays = new Vector4?[DepthMeters.MaxMeters];
 
@@ -86,6 +115,24 @@ public class Visualiser : MonoBehaviour
     private Material rayDepthMaterial;
     private RenderParams rayParams;
     private RenderParams secondRayParams;
+    private Material rulerMaterial;
+    private RenderParams rulerParams;
+    private Material rulerMarkMaterial;
+    private RenderParams rulerMarkParams;
+
+    /// <summary>The marks and numbers built for one ruler</summary>
+    private class RulerMarks
+    {
+        public Transform root;
+        public Mesh mesh;
+        /// <summary>How many whole centimetres the marks were built for</summary>
+        public int centimetres = -1;
+        public readonly List<TextMeshPro> numbers = new();
+        /// <summary>Half the drawn width of each number, in sim units</summary>
+        public readonly List<float> numberHalfWidths = new();
+    }
+
+    private readonly RulerMarks[] rulerMarks = new RulerMarks[MaxRulers];
     private Mesh rayMesh;
 
     private ComputeBuffer statesBuffer;
@@ -116,6 +163,11 @@ public class Visualiser : MonoBehaviour
             rayParams = new RenderParams(rayMaterial);
             secondRayMaterial = new Material(rayMaterial);
             secondRayParams = new RenderParams(secondRayMaterial);
+            // Before the transparent numbers, or sorting by distance would draw the ruler over them from some angles
+            rulerMaterial = new Material(rayMaterial) { renderQueue = (int)RenderQueue.Geometry };
+            rulerParams = new RenderParams(rulerMaterial);
+            rulerMarkMaterial = new Material(rayMaterial);
+            rulerMarkParams = new RenderParams(rulerMarkMaterial);
             rayMesh = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
 
             // Writes depth but leaves the colour alone, for the fluid's own depth and thickness textures
@@ -144,6 +196,9 @@ public class Visualiser : MonoBehaviour
         Shader.SetGlobalColor("depthLineColor", depthLineColor);
         Shader.SetGlobalFloat("depthLineWidth", depthLineWidth);
 
+        for (int i = 0; i < rulers.Length; i++)
+            UpdateRulerMarks(i);
+
         // Part of the scene, so the screen-space fluid refracts them
         if (!hidden && rayMaterial != null)
         {
@@ -153,6 +208,17 @@ public class Visualiser : MonoBehaviour
             {
                 if (depthRays[i] is Vector4 r)
                     Graphics.RenderMesh(i % 2 == 0 ? rayParams : secondRayParams, rayMesh, 0, RayTransform(r));
+            }
+
+            rulerMaterial.color = rulerColor;
+            rulerMarkMaterial.color = rulerMarkColor;
+            for (int i = 0; i < rulers.Length; i++)
+            {
+                if (rulers[i] is not RulerDrawing ruler)
+                    continue;
+
+                Graphics.RenderMesh(rulerParams, rayMesh, 0, ruler.body);
+                Graphics.RenderMesh(rulerMarkParams, rulerMarks[i].mesh, 0, Matrix4x4.TRS(ruler.start, ruler.rotation, Vector3.one));
             }
         }
 
@@ -191,8 +257,8 @@ public class Visualiser : MonoBehaviour
         cmd.DrawMeshInstancedIndirect(mesh, 0, material, 0, commandBuf, 0, rp.matProps);
     }
 
-    /// <summary>Depth only, so the depth meter rays hide the screen-space fluid behind them</summary>
-    public void DrawRayDepth(CommandBuffer fluidCommands)
+    /// <summary>Depth only, so the depth meter rays and rulers hide the screen-space fluid behind them</summary>
+    public void DrawMarkerDepth(CommandBuffer fluidCommands)
     {
         if (rayDepthMaterial == null) return;
 
@@ -201,6 +267,134 @@ public class Visualiser : MonoBehaviour
             if (ray is Vector4 r)
                 fluidCommands.DrawMesh(rayMesh, RayTransform(r), rayDepthMaterial, 0, 0);
         }
+
+        foreach (RulerDrawing? ruler in rulers)
+        {
+            if (ruler is RulerDrawing drawing)
+                fluidCommands.DrawMesh(rayMesh, drawing.body, rayDepthMaterial, 0, 0);
+        }
+    }
+
+    /// <summary>Shows a ruler's numbers where it is now, and rebuilds its marks when it reaches a new centimetre</summary>
+    private void UpdateRulerMarks(int index)
+    {
+        bool shown = !hidden && rulers[index] != null;
+        if (rulerMarks[index] == null && !shown)
+            return;
+
+        rulerMarks[index] ??= CreateRulerMarks(index);
+        RulerMarks marks = rulerMarks[index];
+        marks.root.gameObject.SetActive(shown);
+        if (!shown)
+            return;
+
+        RulerDrawing ruler = rulers[index].Value;
+        marks.root.SetPositionAndRotation(ruler.start, ruler.rotation);
+
+        // The small extra stops a ruler of exactly n cm counting as n - 1 from rounding
+        int centimetres = Mathf.FloorToInt(ruler.size.z / ruler.centimetre + 0.001f);
+        int numbers = centimetres / RulerNumberInterval + 1;
+
+        if (centimetres != marks.centimetres)
+        {
+            marks.centimetres = centimetres;
+            BuildRulerMarkMesh(marks.mesh, ruler, centimetres);
+            ShowRulerNumbers(marks, ruler, numbers);
+        }
+
+        KeepRulerNumbersOnRuler(marks, ruler, numbers);
+    }
+
+    /// <summary>Puts each number at its mark, moved in just enough to stay within the ruler's ends</summary>
+    private static void KeepRulerNumbersOnRuler(RulerMarks marks, RulerDrawing ruler, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float inset = marks.numberHalfWidths[i] + RulerNumberEndMargin;
+            float mark = i * RulerNumberInterval * ruler.centimetre;
+
+            Transform number = marks.numbers[i].transform;
+            Vector3 position = number.localPosition;
+            position.z = Mathf.Clamp(mark, inset, Mathf.Max(inset, ruler.size.z - inset));
+            number.localPosition = position;
+        }
+    }
+
+    private RulerMarks CreateRulerMarks(int index)
+    {
+        Transform root = new GameObject($"Ruler {index} marks").transform;
+        root.SetParent(transform, false);
+
+        Mesh mesh = new() { name = "Ruler marks", indexFormat = IndexFormat.UInt32 };
+        return new RulerMarks { root = root, mesh = mesh };
+    }
+
+    /// <summary>A thin flat mark at every centimetre from the ruler's long edge, longer every 5 and longest every 10</summary>
+    private static void BuildRulerMarkMesh(Mesh mesh, RulerDrawing ruler, int centimetres)
+    {
+        float width = ruler.size.x;
+        float edge = width / 2;
+        float height = ruler.size.y / 2 + RulerMarkGap;
+
+        List<Vector3> vertices = new();
+        List<int> triangles = new();
+
+        for (int mark = 0; mark <= centimetres; mark++)
+        {
+            float z = mark * ruler.centimetre;
+            float reach = (mark % 10 == 0 ? 0.5f : mark % 5 == 0 ? 0.35f : 0.2f) * width;
+            int first = vertices.Count;
+
+            vertices.Add(new Vector3(edge, height, z - RulerMarkHalfWidth));
+            vertices.Add(new Vector3(edge - reach, height, z - RulerMarkHalfWidth));
+            vertices.Add(new Vector3(edge - reach, height, z + RulerMarkHalfWidth));
+            vertices.Add(new Vector3(edge, height, z + RulerMarkHalfWidth));
+            triangles.AddRange(new[] { first, first + 1, first + 2, first, first + 2, first + 3 });
+        }
+
+        mesh.Clear();
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(triangles, 0);
+        mesh.RecalculateBounds();
+    }
+
+    /// <summary>Shows the first count numbers along the ruler, making any that don't exist yet</summary>
+    private void ShowRulerNumbers(RulerMarks marks, RulerDrawing ruler, int count)
+    {
+        while (marks.numbers.Count < count)
+        {
+            TextMeshPro number = CreateRulerNumber(marks, ruler, marks.numbers.Count);
+            marks.numbers.Add(number);
+
+            // The real width is only known once the text has been laid out at its final size
+            number.ForceMeshUpdate();
+            marks.numberHalfWidths.Add(number.textBounds.extents.x);
+        }
+
+        for (int i = 0; i < marks.numbers.Count; i++)
+            marks.numbers[i].gameObject.SetActive(i < count);
+    }
+
+    /// <summary>A number lying on the ruler's top face, by the edge away from the marks, reading along the ruler</summary>
+    private TextMeshPro CreateRulerNumber(RulerMarks marks, RulerDrawing ruler, int index)
+    {
+        TextMeshPro text = new GameObject("Number", typeof(RectTransform), typeof(TextMeshPro)).GetComponent<TextMeshPro>();
+        text.transform.SetParent(marks.root, false);
+
+        int value = index * RulerNumberInterval;
+        float acrossRuler = -ruler.size.x / 2 + RulerNumberHeight / 2 + RulerMarkGap;
+        text.transform.localPosition = new Vector3(acrossRuler, ruler.size.y / 2 + RulerMarkGap, value * ruler.centimetre);
+        text.transform.localRotation = Quaternion.LookRotation(Vector3.down, Vector3.left);
+
+        text.rectTransform.sizeDelta = new Vector2(RulerNumberWidth, RulerNumberHeight);
+        text.enableAutoSizing = true;
+        text.fontSizeMin = 1;
+        text.fontSizeMax = 100;
+        text.alignment = TextAlignmentOptions.Center;
+        text.textWrappingMode = TextWrappingModes.NoWrap;
+        text.color = rulerMarkColor;
+        text.text = value.ToString();
+        return text;
     }
 
     /// <summary>A vertical ray from its centre (xyz) and length (w)</summary>
@@ -431,6 +625,13 @@ public class Visualiser : MonoBehaviour
         Destroy(mesh);
         Destroy(rayMaterial);
         Destroy(secondRayMaterial);
+        Destroy(rulerMaterial);
+        Destroy(rulerMarkMaterial);
+        foreach (RulerMarks marks in rulerMarks)
+        {
+            if (marks != null)
+                Destroy(marks.mesh);
+        }
         Destroy(rayDepthMaterial);
     }
 

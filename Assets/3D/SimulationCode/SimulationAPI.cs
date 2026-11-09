@@ -26,6 +26,25 @@ public class SimulationAPI : MonoBehaviour
     /// <summary>Sim force of 1 N</summary>
     public float ForceScale => MassScale * gravityScale;
 
+    /// <summary>Where new things appear: in front of the camera, in sim units</summary>
+    public Vector3 GetSpawnPosition()
+    {
+        Transform camera = Camera.main.transform;
+        return camera.position + camera.forward * (SpawnDistance * math.cmax(manager.Tank.size));
+    }
+
+    /// <summary>A length in m, in sim units</summary>
+    public float FromMetres(float metres)
+    {
+        return metres * lengthScale;
+    }
+
+    /// <summary>A length in sim units, in m</summary>
+    public float ToMetres(float simLength)
+    {
+        return simLength / lengthScale;
+    }
+
     /// <summary>Simulation seconds run so far, which stop while paused</summary>
     public float GetSimulationTime()
     {
@@ -89,8 +108,7 @@ public class SimulationAPI : MonoBehaviour
         if (math.any(radius > tank.innerHalfSize))
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The body has to fit inside the tank.");
 
-        Transform camera = Camera.main.transform;
-        float3 position = (float3)camera.position + (float3)camera.forward * (SpawnDistance * math.cmax(tank.size));
+        float3 position = GetSpawnPosition();
         float3 limit = tank.innerHalfSize - radius;
 
         return manager.AddBody(new RigidBodySettings3D
@@ -133,8 +151,7 @@ public class SimulationAPI : MonoBehaviour
         if (scale < 0 || scale >= RigidBodies3D.MaxScales)
             throw new ArgumentOutOfRangeException(nameof(scale), scale, $"Scales are numbered 0 to {RigidBodies3D.MaxScales - 1}.");
 
-        Transform camera = Camera.main.transform;
-        float3 position = (float3)camera.position + (float3)camera.forward * (SpawnDistance * math.cmax(manager.Tank.size));
+        float3 position = GetSpawnPosition();
 
         manager.AddScale(new RigidBodySettings3D
         {

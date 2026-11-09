@@ -126,7 +126,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private Visualiser visualiser;
 
     /// <summary>Creates the materials and binds the particle positions</summary>
-    /// <param name="visualiser">Optional, draws the depth meter rays</param>
+    /// <param name="visualiser">Optional, draws the depth meter rays and rulers</param>
     public void Setup(SimulationManager sim, BodyRenderer bodyRenderer, Visualiser visualiser)
     {
         this.visualiser = visualiser;
@@ -231,7 +231,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         bodyRenderer.DrawDepth(cmd);
 
         if (visualiser != null)
-            visualiser.DrawRayDepth(cmd);
+            visualiser.DrawMarkerDepth(cmd);
     }
 
     /// <summary>Gives the full-screen passes the camera matrices, which Blit hides from them</summary>

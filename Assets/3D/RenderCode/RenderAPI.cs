@@ -19,6 +19,27 @@ public class RenderAPI : MonoBehaviour
         renderManager.WaveProjectionOn = on;
     }
 
+    /// <summary>Draws a ruler lying along its rotation's forward direction from start, with marks counted from start</summary>
+    /// <param name="size">Width, thickness and length, in sim units</param>
+    /// <param name="centimetre">Length of 1 cm, in sim units</param>
+    public void ShowRuler(int ruler, Vector3 start, Quaternion rotation, Vector3 size, float centimetre)
+    {
+        visualiser.rulers[ruler] = new RulerDrawing
+        {
+            body = Matrix4x4.TRS(start + rotation * Vector3.forward * (size.z / 2), rotation, size),
+            start = start,
+            rotation = rotation,
+            size = size,
+            centimetre = centimetre
+        };
+    }
+
+    /// <summary>Stops drawing a ruler</summary>
+    public void HideRuler(int ruler)
+    {
+        visualiser.rulers[ruler] = null;
+    }
+
     /// <summary>Draws a depth meter's vertical ray</summary>
     public void ShowDepthRay(int meter, Vector3 centre, float length)
     {
