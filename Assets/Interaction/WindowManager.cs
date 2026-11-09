@@ -38,6 +38,9 @@ public class WindowManager : MonoBehaviour
     /// <summary>Each open object window and the id of its body</summary>
     private readonly List<(Window window, int body)> objectWindows = new();
 
+    /// <summary>The wave generator's window, null when it's closed</summary>
+    private Window waveWindow;
+
     /// <summary>Id of the body being dragged, -1 when there's none</summary>
     private int draggedBody = -1;
     private Plane dragPlane;
@@ -66,6 +69,12 @@ public class WindowManager : MonoBehaviour
     public void OnSideMenuClick()
     {
         sideMenu.SetActive(!sideMenu.activeSelf);
+    }
+
+    /// <summary>Swaps the scene for the ripple tank view, or back</summary>
+    public void ToggleWaveProjection()
+    {
+        renderApi.SetWaveProjection(!renderApi.IsWaveProjectionOn());
     }
 
     /// <summary>Opens or closes the settings card, pausing the simulation while it's open</summary>
@@ -236,6 +245,33 @@ public class WindowManager : MonoBehaviour
         };
     }
 
+    /// <summary>Puts the dipper in the tank, with a window to switch it on and set its frequency and amplitude</summary>
+    public void CreateWaveWindow()
+    {
+        if (waveWindow)
+            return;
+
+        const int On = 0, Frequency = 1, Amplitude = 2;
+
+        api.AddDipper();
+        Window window = CreateWindow("Wave generator",
+            new Field { name = "On", fieldType = FieldType.Toggle, isOn = false },
+            new Field { name = "Frequency", fieldType = FieldType.Numeric, value = 0.15f, min = 0.05f, max = 0.25f, unit = "Hz" },
+            new Field { name = "Amplitude", fieldType = FieldType.Numeric, value = 3, min = 0, max = 6, unit = "cm" });
+        waveWindow = window;
+
+        void Apply() => api.SetDipper(window.fields[On].isOn, window.fields[Frequency].value, window.fields[Amplitude].value / 100);
+
+        Apply();
+        window.FieldChanged += _ => Apply();
+
+        window.Closed += () =>
+        {
+            api.RemoveDipper();
+            waveWindow = null;
+        };
+    }
+
     /// <summary>Spawns the next scale with a window showing its reading</summary>
     public void CreateScaleWindow()
     {
@@ -285,7 +321,8 @@ public class WindowManager : MonoBehaviour
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
 
-        if (Input.GetMouseButtonDown(1) && !EventSystem.current.IsPointerOverGameObject())
+        // The bodies can't be seen in the ripple tank view
+        if (Input.GetMouseButtonDown(1) && !renderApi.IsWaveProjectionOn() && !EventSystem.current.IsPointerOverGameObject())
         {
             float nearest = float.PositiveInfinity;
             IEnumerable<int> scales = Enumerable.Range(0, scaleWindows.Length).Where(scale => scaleWindows[scale]).Select(scale => api.GetScaleBodyId(scale));

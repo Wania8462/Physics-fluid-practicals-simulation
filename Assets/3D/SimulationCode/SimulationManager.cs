@@ -11,7 +11,7 @@ using UnityEngine.Rendering;
 [Serializable]
 public struct SimulationSettings3D
 {
-    [Header("Simulation settings")]
+    [Header("General")]
     public float interactionRadius;
     public float gravity;
     public float collisionDamping;
@@ -42,17 +42,23 @@ public struct SimulationSettings3D
 /// <summary>Runs the fluid and rigid body simulation on the GPU</summary>
 public class SimulationManager : MonoBehaviour
 {
-    [Header("Simulation settings")]
+    [Header("Simulation")]
     [SerializeField] internal bool paused;
-    [SerializeField] internal SimulationSettings3D settings;
     [SerializeField] public float particleRadius = 0.5f;
+    [SerializeField] internal SimulationSettings3D settings;
+
+    [Header("Time")]
     [SerializeField] private int targetFrameRate = 120;
     [SerializeField] private bool useRealDeltaTime;
     [SerializeField] private float fakeFramerate = 120;
+
+    [Header("Readings")]
     [Tooltip("Seconds the drawn body forces take to ease about two thirds of the way to a new value. 0 draws them raw")]
     [SerializeField] private float forceSmoothingTime = 0.25f;
     [Tooltip("How near fluid has to be to a body's surface to count as touching it, in particle spacings. Lower it if floating bodies read too submerged. Keep it under interactionRadius")]
     [SerializeField] private float wetDistance = 1.5f;
+
+    [Header("Dragging objects")]
     [Tooltip("Top speed of a thrown object, in sim units per second. At 120 steps per second, above about 360 it moves more than a particle spacing per step and can pass through fluid")]
     [SerializeField] private float maxThrowSpeed = 300;
     [Tooltip("Seconds of dragging that decide a throw's velocity. Higher ignores flicks, lower follows the last movement. 0 uses only the last frame")]
@@ -69,6 +75,8 @@ public class SimulationManager : MonoBehaviour
     public event Action<SimulationManager> BuffersChanged;
     /// <summary>Raised every frame, even when paused, so the renderers draw</summary>
     public event Action StepFinished;
+    /// <summary>Raised before each simulation step with its length in sim seconds, so bodies can be driven</summary>
+    public event Action<float> StepStarting;
 
     [HideInInspector] public int numParticles;
     [HideInInspector] public int numBoundaryParticles;
@@ -77,6 +85,8 @@ public class SimulationManager : MonoBehaviour
     public float Spacing => spawn.Spacing;
     /// <summary>The tank the fluid is simulated in</summary>
     public Tank Tank => spawn.GetTank(particleRadius);
+    /// <summary>Height of the top of the fluid as spawned</summary>
+    public float SurfaceHeight => spawn.SurfaceHeight;
     /// <summary>Sim seconds one step advances</summary>
     private float StepTime => useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
 
@@ -94,6 +104,8 @@ public class SimulationManager : MonoBehaviour
     private readonly int[] scaleSlots = Enumerable.Repeat(-1, RigidBodies3D.MaxScales).ToArray();
     private Vector4[] scaleForces;
     private bool scaleReadingWanted;
+    private Vector4[] smoothedForces;
+    private bool buoyancyWanted;
 
     /// <summary>The body being dragged, -1 if there's none</summary>
     private int heldBody = -1;
@@ -158,6 +170,10 @@ public class SimulationManager : MonoBehaviour
             AsyncGPUReadback.Request(Buffers["BodyScaleForces"], request => { if (!request.hasError) scaleForces = request.GetData<Vector4>().ToArray(); });
         scaleReadingWanted = false;
 
+        if (buoyancyWanted)
+            AsyncGPUReadback.Request(Buffers["SmoothedBodyForces"], request => { if (!request.hasError) smoothedForces = request.GetData<Vector4>().ToArray(); });
+        buoyancyWanted = false;
+
         MeasureSubmergedBodies();
 
         StepFinished?.Invoke();
@@ -192,6 +208,8 @@ public class SimulationManager : MonoBehaviour
     {
         float dt = StepTime;
         compute.SetFloat("dt", dt);
+
+        StepStarting?.Invoke(dt);
 
         compute.Dispatch(KernelIDs["ExternalForces"], threadGroups);
 
@@ -496,7 +514,7 @@ public class SimulationManager : MonoBehaviour
     }
 
     /// <summary>Writes a body's position and velocity to the GPU. It stops spinning, its rotation stays as last read back</summary>
-    private void SetBodyState(int id, float3 position, float3 velocity)
+    internal void SetBodyState(int id, float3 position, float3 velocity)
     {
         if (bodies == null) return;
 
@@ -553,14 +571,18 @@ public class SimulationManager : MonoBehaviour
         return RigidBodies3D.SubmergedFraction(bodies, body, ((float4)submergedUps[body]).xyz, boundaryWet);
     }
 
-    /// <summary>The fluid's push on a body, smoothed like its arrow, in sim force units. Stalls for a GPU readback</summary>
+    /// <summary>The fluid's push on a body, smoothed like its arrow, in sim force units. Lags a frame or two behind</summary>
     internal Vector3 BodyBuoyancy(int id)
     {
         CheckBodyId(id);
-        Vector4[] force = new Vector4[1];
+        buoyancyWanted = true;
+
+        // Bodies may have been added or removed since this was read back
         int index = bodies.inspectorIndices.IndexOf(id) * RigidBodies3D.ForceCount + RigidBodies3D.ForceBuoyancy;
-        Buffers["SmoothedBodyForces"].GetData(force, 0, index, 1);
-        return force[0];
+        if (smoothedForces == null || index >= smoothedForces.Length)
+            return Vector3.zero;
+
+        return smoothedForces[index];
     }
 
     /// <summary>The body slot of a scale. Throws if the scale isn't placed</summary>

@@ -19,6 +19,8 @@ public struct RigidBodySettings3D
     public BodyShape3D shape;
     [Tooltip("Sphere radius, or half the edge length of a cube")]
     public float bodyRadius;
+    [Tooltip("Cubes only: a separate half size per axis, to make a box. Zero uses bodyRadius on every side")]
+    public float3 boxHalfExtents;
     [Tooltip("Spacing between the boundary particles sampled on the surface")]
     public float sampleDensity;
     public float3 bodyPosition;
@@ -32,6 +34,9 @@ public struct RigidBodySettings3D
 
     /// <summary>An empty slot in the bodies array</summary>
     public bool IsEmpty => bodyRadius == 0;
+
+    /// <summary>A cube's half size along each axis</summary>
+    public readonly float3 CubeHalfExtents => math.any(boxHalfExtents != 0) ? boxHalfExtents : new float3(bodyRadius);
 }
 
 /// <summary>Mirrors RigidBodyProperties in RigidBodyMath3D.hlsl</summary>
@@ -144,7 +149,7 @@ public static class RigidBodies3D
 
         RigidBodyProperties3D bodyProperties = new()
         {
-            size = body.shape == BodyShape3D.Scale ? new float4(ScaleHalfExtents, body.scale) : new float4(new float3(body.bodyRadius), 0),
+            size = body.shape == BodyShape3D.Scale ? new float4(ScaleHalfExtents, body.scale) : new float4(body.CubeHalfExtents, 0),
             centerOfMass = float4.zero,
             shape = (uint)body.shape,
             start = (uint)data.boundaryPositions.Count,
@@ -445,7 +450,7 @@ public static class RigidBodies3D
     /// <summary>Points on the surface of a body, centred on the origin</summary>
     private static float3[] SampleSurface(RigidBodySettings3D body, Spawn3DParticles spawn) => body.shape switch
     {
-        BodyShape3D.Cube => spawn.InitCubeSurfacePositions(body.bodyRadius, body.sampleDensity),
+        BodyShape3D.Cube => spawn.InitBoxSurfacePositions(body.CubeHalfExtents, body.sampleDensity),
         BodyShape3D.Sphere => spawn.InitSphereSurfacePositions(body.bodyRadius, body.sampleDensity),
         BodyShape3D.Scale => spawn.InitScaleSurfacePositions(ScaleHalfExtents, ScalePanRadius, ScalePanHalfHeight, body.sampleDensity),
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no sampler for shape {body.shape}")
@@ -454,7 +459,7 @@ public static class RigidBodies3D
     /// <summary>Distance from a point to a body's surface, negative inside</summary>
     private static float SignedDistance(RigidBodySettings3D body, float3 local) => body.shape switch
     {
-        BodyShape3D.Cube => BoxSignedDistance(local, new float3(body.bodyRadius)),
+        BodyShape3D.Cube => BoxSignedDistance(local, body.CubeHalfExtents),
         BodyShape3D.Sphere => math.length(local) - body.bodyRadius,
         BodyShape3D.Scale => math.min(BoxSignedDistance(local, ScaleHalfExtents),
             CylinderSignedDistance(local - new float3(0, ScaleHalfExtents.y + ScalePanHalfHeight, 0), ScalePanRadius, ScalePanHalfHeight)),

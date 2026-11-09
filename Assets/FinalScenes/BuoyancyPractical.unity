@@ -587,7 +587,7 @@ Transform:
   m_GameObject: {fileID: 155993502}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1, z: -10}
+  m_LocalPosition: {x: 0, y: 1, z: -186.4}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -5569,6 +5569,7 @@ MonoBehaviour:
   windowPrefab: {fileID: 725632689083460231, guid: 10cdaec706f13ed44b564d6e8800c178, type: 3}
   api: {fileID: 1788287367}
   renderApi: {fileID: 2059809248}
+  dragScrollStep: 10
 --- !u!114 &1218924493
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -7141,6 +7142,10 @@ MonoBehaviour:
   useRealDeltaTime: 0
   fakeFramerate: 30
   forceSmoothingTime: 0.25
+  wetDistance: 1.5
+  maxThrowSpeed: 300
+  throwSmoothingTime: 0.05
+  wallAlignSpeed: 180
   compute: {fileID: 7200000, guid: b5e4a0cf884ba434689f3c17b13c18b3, type: 3}
   spawn: {fileID: 1788287365}
   numParticles: 0
@@ -7159,19 +7164,19 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Spawn3DParticles
   center:
     x: 0
-    y: 0
+    y: -60
     z: 0
   particleBoxSize:
     x: 150
-    y: 150
+    y: 70
     z: 150
   spacing: 3
   useJitter: 1
   jitterStrength: 0.5
   tankPadding:
-    x: 30
-    y: 30
-    z: 30
+    x: 0
+    y: 60
+    z: 0
 --- !u!4 &1788287366
 Transform:
   m_ObjectHideFlags: 0

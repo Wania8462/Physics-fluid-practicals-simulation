@@ -5,6 +5,19 @@ using UnityEngine;
 public class RenderAPI : MonoBehaviour
 {
     [SerializeField] private Visualiser visualiser;
+    [SerializeField] private RenderManager renderManager;
+
+    /// <summary>Whether the ripple tank view is showing</summary>
+    public bool IsWaveProjectionOn()
+    {
+        return renderManager != null && renderManager.WaveProjectionOn;
+    }
+
+    /// <summary>Swaps the whole scene for the ripple tank view, or back</summary>
+    public void SetWaveProjection(bool on)
+    {
+        renderManager.WaveProjectionOn = on;
+    }
 
     /// <summary>Whether the force's arrows are drawn</summary>
     public bool IsForceDrawn(BodyForce force)

@@ -17,12 +17,29 @@ public class RenderManager : MonoBehaviour
     [SerializeField] private ScreenSpaceFluidRenderer screenSpaceFluidRenderer;
     [Tooltip("Draws the forces on the bodies. Optional, scenes without force arrows can leave it empty")]
     [SerializeField] private Visualiser visualiser;
+    [Tooltip("Draws the ripple tank view. Optional, scenes without waves can leave it empty")]
+    [SerializeField] private WaveProjectionRenderer waveProjection;
     [Tooltip("Billboards draws every particle as a flat disc. ScreenSpace draws the fluid as one smooth, refractive surface with the screen-space fluid renderer")]
     [SerializeField] private FluidRenderMode fluidRenderMode = FluidRenderMode.Billboards;
     [Tooltip("Draw rigid bodies as solid meshes instead of as their boundary particles")]
     [SerializeField] private bool drawSolidBodies = true;
     [Tooltip("Direction the light travels in, shared by every shader that declares lightDirection")]
     [SerializeField] private Vector3 lightDirection = new(-0.4f, -1, 0.6f);
+
+    private bool waveProjectionOn;
+
+    /// <summary>Whether the ripple tank view replaces everything else that's drawn</summary>
+    public bool WaveProjectionOn
+    {
+        get => waveProjectionOn;
+        set
+        {
+            if (waveProjection == null || value == waveProjectionOn) return;
+
+            waveProjectionOn = value;
+            waveProjection.ResetHistory();
+        }
+    }
 
     /// <summary>Sets up every renderer for the new buffers</summary>
     private void Setup(SimulationManager sim)
@@ -37,6 +54,9 @@ public class RenderManager : MonoBehaviour
 
         if (visualiser != null)
             TrySetup(visualiser, () => visualiser.Setup(sim));
+
+        if (waveProjection != null)
+            TrySetup(waveProjection, () => waveProjection.Setup(sim));
     }
 
     /// <summary>Logs a renderer that fails to set up, without stopping the others</summary>
@@ -56,6 +76,21 @@ public class RenderManager : MonoBehaviour
     private void Draw()
     {
         Shader.SetGlobalVector("lightDirection", lightDirection);
+
+        if (visualiser != null)
+            visualiser.hidden = waveProjectionOn;
+
+        if (waveProjectionOn)
+        {
+            if (screenSpaceFluidRenderer != null)
+                screenSpaceFluidRenderer.enabled = false;
+
+            if (visualiser != null)
+                visualiser.Draw();
+
+            waveProjection.Draw();
+            return;
+        }
 
         environmentRenderer.DrawTank();
 

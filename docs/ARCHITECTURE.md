@@ -218,11 +218,14 @@ flowchart TD
 | **Fluid properties** | Density (kg/m³), Viscosity (mPa·s) | `SetDensity`, `SetViscosity` |
 | **Gravity properties** | Gravity (m/s²) | `SetGravity` |
 | **Visualisation** | A toggle per `BodyForce`, plus Values | `RenderAPI.DrawForce` / `DrawForceValues`. *Resultant* and the individual forces turn each other off |
+| **Wave generator** | On, Frequency (Hz of simulation time), Amplitude (cm) | Only one can be open. Opening adds the dipper, a full-width fixed box against the -x wall that lowers into the water. It's a `WaveDipper` component on the `SimulationManager` object, only in scenes with waves, and moves on `StepStarting` each simulation step, easing its amplitude at `easeSpeed`. The amplitude is capped so its acceleration stays under `maxAcceleration` × gravity, and it sits `clearance` + amplitude deep so its bottom stays under the water. Closing removes it |
 | **Scale N** | Weight (readout, N), Show in world | Places a scale (up to `MaxScales`, the button does nothing past that). While the readout is visible, `UpdateScales` writes the reading to it and to the text on the scale each frame. Minimised, both keep the last value. Closing removes the scale |
 
 **Moving scales and objects**: right-click one in the world and drag. It slides on a plane facing the camera. The scroll wheel moves that plane away from or towards the camera, `dragScrollStep` units per notch. A dragged object is held with its rotation kept, except that a cube pushed into a wall turns towards lying flat on it at `wallAlignSpeed`. On release it keeps the velocity it was dragged at, smoothed over `throwSmoothingTime` and capped at `maxThrowSpeed`, so it can be thrown. Scales stay where they're dropped.
 
 **Settings card**: `OnSettingsClick` shows or hides it and pauses the simulation while it's open.
+
+**Wave projection**: `ToggleWaveProjection` swaps everything drawn for the ripple tank view, while the simulation and windows keep running. `WaveProjectionRenderer` (optional on `RenderManager`, rendering only) builds a water height map by sharing particles between top-down grid columns, averages it over time, blurs it, and works out the light from its curvature: `1 / max(minFocus, 1 + screenDistance × (1 − 1/1.33) × ∇²h)`. Crests curve downwards and act as lenses, so they show as bright bands and troughs as dark ones, as in a real ripple tank. Absorption would give the opposite and be very faint.
 
 ### Controls
 

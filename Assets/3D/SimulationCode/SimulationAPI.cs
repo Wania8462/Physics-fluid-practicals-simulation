@@ -10,6 +10,9 @@ public class SimulationAPI : MonoBehaviour
 
     [SerializeField] private SimulationManager manager;
 
+    /// <summary>Only scenes with waves have one, on the same object as the manager</summary>
+    private WaveDipper Dipper => manager.GetComponent<WaveDipper>();
+
     // ponytail: hand-picked to look like water on Earth, not measured
     [Header("Unit scales")]
     [SerializeField] private float lengthScale = 200;          // Sim units per metre
@@ -141,6 +144,26 @@ public class SimulationAPI : MonoBehaviour
     public void RemoveScale(int scale)
     {
         manager.RemoveScale(scale);
+    }
+
+    /// <summary>Lowers the wave dipper into the end of the tank, switched off</summary>
+    public void AddDipper()
+    {
+        Dipper.Add();
+    }
+
+    /// <summary>Removes the wave dipper</summary>
+    public void RemoveDipper()
+    {
+        Dipper.Remove();
+    }
+
+    /// <summary>Sets how the wave dipper moves. Turning it off eases it to rest</summary>
+    /// <param name="frequency">In Hz, of simulation time</param>
+    /// <param name="amplitude">In m</param>
+    public void SetDipper(bool on, float frequency, float amplitude)
+    {
+        Dipper.Set(on, frequency, amplitude * lengthScale);
     }
 
     /// <summary>The body id of a scale</summary>

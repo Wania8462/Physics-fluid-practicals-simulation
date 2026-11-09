@@ -58,6 +58,8 @@ public class Visualiser : MonoBehaviour
     internal bool showValues;
     /// <summary>Whether the bodies show horizontal lines marking how deep they sit</summary>
     internal bool showDepthLines;
+    /// <summary>Hides the arrows, values and scale readings while another view replaces the scene</summary>
+    internal bool hidden;
 
     /// <summary>Text written on each scale, null for none</summary>
     internal readonly string[] scaleTexts = new string[RigidBodies3D.MaxScales];
@@ -117,7 +119,7 @@ public class Visualiser : MonoBehaviour
             if (shown[i])
                 shownForces |= 1 << i;
 
-        drawArrows = shownForces != 0;
+        drawArrows = shownForces != 0 && !hidden;
         if (!drawArrows) return;
 
         rp.matProps.SetInteger("shownForces", shownForces);
@@ -152,7 +154,7 @@ public class Visualiser : MonoBehaviour
     {
         int used = 0;
 
-        if (showValues && states != null && forces != null)
+        if (showValues && !hidden && states != null && forces != null)
         {
             Color[] colors = Colors;
             const int ForceCount = RigidBodies3D.ForceCount;
@@ -181,7 +183,7 @@ public class Visualiser : MonoBehaviour
 
         for (int scale = 0; scale < RigidBodies3D.MaxScales; scale++)
         {
-            if (scaleTexts[scale] == null || sim == null || !sim.TryGetScalePosition(scale, out Vector3 position))
+            if (hidden || scaleTexts[scale] == null || sim == null || !sim.TryGetScalePosition(scale, out Vector3 position))
             {
                 if (sideTexts[scale] != null)
                     sideTexts[scale][0].transform.parent.gameObject.SetActive(false);

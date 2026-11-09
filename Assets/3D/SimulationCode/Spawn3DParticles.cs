@@ -38,6 +38,9 @@ public class Spawn3DParticles : MonoBehaviour
     /// <summary>Distance between spawned particles, which the fluid rests at</summary>
     public float Spacing => spacing;
 
+    /// <summary>Height of the top of the fluid as spawned</summary>
+    public float SurfaceHeight => center.y + ParticlesPerAxis.y * spacing / 2;
+
     private int3 ParticlesPerAxis => math.max(1, (int3)math.floor(particleBoxSize / spacing));
 
     public int GetNumberOfParticles() => ParticlesPerAxis.x * ParticlesPerAxis.y * ParticlesPerAxis.z;
@@ -79,22 +82,22 @@ public class Spawn3DParticles : MonoBehaviour
 
     private float3 TankSize => particleBoxSize + tankPadding * 2;
 
-    /// <summary>Evenly spaced points on a cube's surface</summary>
-    public float3[] InitCubeSurfacePositions(float halfSize, float sampleDensity)
+    /// <summary>Evenly spaced points on a box's surface</summary>
+    public float3[] InitBoxSurfacePositions(float3 halfExtents, float sampleDensity)
     {
-        int cellsPerEdge = Mathf.Max(1, Mathf.CeilToInt(2 * halfSize / sampleDensity));
-        float latticeSpacing = 2 * halfSize / cellsPerEdge;
+        int3 cells = math.max(1, (int3)math.ceil(2 * halfExtents / sampleDensity));
+        float3 latticeSpacing = 2 * halfExtents / cells;
         List<float3> positions = new();
 
-        for (int i = 0; i <= cellsPerEdge; i++)
+        for (int i = 0; i <= cells.x; i++)
         {
-            for (int j = 0; j <= cellsPerEdge; j++)
+            for (int j = 0; j <= cells.y; j++)
             {
-                for (int k = 0; k <= cellsPerEdge; k++)
+                for (int k = 0; k <= cells.z; k++)
                 {
-                    bool onFace = i == 0 || j == 0 || k == 0 || i == cellsPerEdge || j == cellsPerEdge || k == cellsPerEdge;
+                    bool onFace = i == 0 || j == 0 || k == 0 || i == cells.x || j == cells.y || k == cells.z;
                     if (onFace)
-                        positions.Add(new float3(i, j, k) * latticeSpacing - halfSize);
+                        positions.Add(new float3(i, j, k) * latticeSpacing - halfExtents);
                 }
             }
         }
