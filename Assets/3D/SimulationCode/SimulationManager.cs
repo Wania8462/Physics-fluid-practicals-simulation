@@ -87,6 +87,8 @@ public class SimulationManager : MonoBehaviour
     public Tank Tank => spawn.GetTank(particleRadius);
     /// <summary>Height of the top of the fluid as spawned</summary>
     public float SurfaceHeight => spawn.SurfaceHeight;
+    /// <summary>Sim seconds simulated so far, which stops while paused</summary>
+    public float SimulationTime { get; private set; }
     /// <summary>Sim seconds one step advances</summary>
     private float StepTime => useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
 
@@ -208,6 +210,7 @@ public class SimulationManager : MonoBehaviour
     {
         float dt = StepTime;
         compute.SetFloat("dt", dt);
+        SimulationTime += dt;
 
         StepStarting?.Invoke(dt);
 

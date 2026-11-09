@@ -50,7 +50,7 @@ public class RenderManager : MonoBehaviour
 
         // Optional unless in screen-space mode
         if (screenSpaceFluidRenderer != null || fluidRenderMode == FluidRenderMode.ScreenSpace)
-            TrySetup(screenSpaceFluidRenderer, () => screenSpaceFluidRenderer.Setup(sim, bodyRenderer));
+            TrySetup(screenSpaceFluidRenderer, () => screenSpaceFluidRenderer.Setup(sim, bodyRenderer, visualiser));
 
         if (visualiser != null)
             TrySetup(visualiser, () => visualiser.Setup(sim));

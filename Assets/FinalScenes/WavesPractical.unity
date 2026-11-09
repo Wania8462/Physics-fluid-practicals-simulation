@@ -4919,6 +4919,9 @@ MonoBehaviour:
   scaleColor: {r: 0, g: 0, b: 0, a: 1}
   depthLineColor: {r: 1, g: 1, b: 1, a: 1}
   depthLineWidth: 2
+  depthRayColor: {r: 1, g: 0, b: 0, a: 1}
+  secondDepthRayColor: {r: 0, g: 1, b: 0, a: 1}
+  depthRayThickness: 1.5
 --- !u!114 &1018029496
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -5058,14 +5061,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4932c06998c0b65459cec0aa0f69b016, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 3DRender::WaveProjectionRenderer
-  cam: {fileID: 761640184}
   compute: {fileID: 7200000, guid: d754a04870360774e82e73a0118ea285, type: 3}
   shader: {fileID: 4800000, guid: 13914b95bf78e1941bf771822e4da4c5, type: 3}
-  screenDistance: 400
-  blurRadius: 9
-  smoothingTime: 0.3
-  minFocus: 0.25
-  planeBrightness: 0.6
+  screenDistance: 500
+  blurRadius: 7
+  smoothingTime: 0.1
+  minFocus: 0
+  planeBrightness: 0.2
 --- !u!1 &1018641516
 GameObject:
   m_ObjectHideFlags: 0
@@ -5255,6 +5257,8 @@ MonoBehaviour:
   api: {fileID: 1165826838}
   renderApi: {fileID: 1018029501}
   dragScrollStep: 10
+  depthRayGrabSize: 16
+  depthGraphSeconds: 10
 --- !u!114 &1109532835
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -6074,7 +6078,7 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1109532834}
         m_TargetAssemblyTypeName: WindowManager, Assembly-CSharp
-        m_MethodName: CreateScaleWindow
+        m_MethodName: CreateStopwatchWindow
         m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
@@ -8959,7 +8963,7 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1109532834}
         m_TargetAssemblyTypeName: WindowManager, Assembly-CSharp
-        m_MethodName: CreateGravityWindow
+        m_MethodName: CreateDepthMeterWindow
         m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}

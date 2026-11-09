@@ -12,9 +12,11 @@ public enum FieldType
     Numeric,
     Dropdown,
     Toggle,
-    Readout,  // Shows a value the user can't edit
-    Separator,  // A thin line between groups of fields
-    Foldout  // A row that shows or hides the fields after it
+    Readout,
+    Separator,
+    Foldout,
+    Graph,
+    Buttons
 }
 
 /// <summary>One field of a window</summary>
@@ -29,8 +31,10 @@ public struct Field
     public float min;
     public float max;
     public string unit;
+    /// <summary>Readout: how the value is written, null for one decimal at most</summary>
+    public string format;
 
-    // Dropdown
+    // Dropdown, and Buttons where selected is the button last pressed
     public string[] options;
     public int selected;
 
@@ -39,6 +43,12 @@ public struct Field
 
     // Foldout: how many of the fields after it are inside
     public int foldedFields;
+
+    // Graph: the lines drawn, each point being seconds before the newest (at most 0) and a value. Also uses unit
+    public Vector2[][] graphLines;
+    public float graphSeconds;
+    /// <summary>The vertical axis never covers less than this, so noise isn't blown up</summary>
+    public float graphMinRange;
 
     /// <summary>Height of the field's UI, in pixels</summary>
     public readonly int GetHeight()
@@ -51,6 +61,8 @@ public struct Field
             FieldType.Readout => 56,
             FieldType.Separator => FieldUI.SeparatorHeight,
             FieldType.Foldout => 56,
+            FieldType.Graph => FieldUI.GraphHeight,
+            FieldType.Buttons => 56,
             _ => throw new Exception($"There is no height for {fieldType}"),
         };
     }

@@ -19,6 +19,18 @@ public class RenderAPI : MonoBehaviour
         renderManager.WaveProjectionOn = on;
     }
 
+    /// <summary>Draws a depth meter's vertical ray</summary>
+    public void ShowDepthRay(int meter, Vector3 centre, float length)
+    {
+        visualiser.depthRays[meter] = new Vector4(centre.x, centre.y, centre.z, length);
+    }
+
+    /// <summary>Stops drawing a depth meter's ray</summary>
+    public void HideDepthRay(int meter)
+    {
+        visualiser.depthRays[meter] = null;
+    }
+
     /// <summary>Whether the force's arrows are drawn</summary>
     public bool IsForceDrawn(BodyForce force)
     {

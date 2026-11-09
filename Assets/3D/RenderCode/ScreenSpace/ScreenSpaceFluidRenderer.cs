@@ -123,10 +123,14 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private int numParticles;
     private float spacing;
     private BodyRenderer bodyRenderer;
+    private Visualiser visualiser;
 
     /// <summary>Creates the materials and binds the particle positions</summary>
-    public void Setup(SimulationManager sim, BodyRenderer bodyRenderer)
+    /// <param name="visualiser">Optional, draws the depth meter rays</param>
+    public void Setup(SimulationManager sim, BodyRenderer bodyRenderer, Visualiser visualiser)
     {
+        this.visualiser = visualiser;
+
         // Only works in the Built-in Render Pipeline
         if (GraphicsSettings.currentRenderPipeline != null)
             throw new InvalidOperationException($"it needs the Built-in Render Pipeline, but {GraphicsSettings.currentRenderPipeline.name} is active");
@@ -175,7 +179,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.GetTemporaryRT(FluidDepthTexId, -1, -1, 24, FilterMode.Point, RenderTextureFormat.RGFloat);
         cmd.SetRenderTarget(FluidDepthTexId);
         cmd.ClearRenderTarget(true, true, NoDepthColor);
-        bodyRenderer.DrawDepth(cmd);
+        DrawOccluders();
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, depthPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Depth");
 
@@ -184,7 +188,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.GetTemporaryRT(FluidThicknessTexId, -2, -2, 24, FilterMode.Bilinear, RenderTextureFormat.RHalf);
         cmd.SetRenderTarget(FluidThicknessTexId);
         cmd.ClearRenderTarget(true, true, Color.clear);
-        bodyRenderer.DrawDepth(cmd);
+        DrawOccluders();
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, thicknessPass, MeshTopology.Triangles, 6, numParticles);
         cmd.EndSample("SSF Thickness");
 
@@ -219,6 +223,15 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidDepthTexId);
         cmd.ReleaseTemporaryRT(FluidThicknessTexId);
         cmd.ReleaseTemporaryRT(FluidSceneTexId);
+    }
+
+    /// <summary>Writes the depth of everything that hides fluid behind it</summary>
+    private void DrawOccluders()
+    {
+        bodyRenderer.DrawDepth(cmd);
+
+        if (visualiser != null)
+            visualiser.DrawRayDepth(cmd);
     }
 
     /// <summary>Gives the full-screen passes the camera matrices, which Blit hides from them</summary>

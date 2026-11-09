@@ -51,6 +51,10 @@ public class Visualiser : MonoBehaviour
     [SerializeField] private Color depthLineColor = Color.white;
     [Tooltip("Thickness of the depth lines, in pixels")]
     [SerializeField] private float depthLineWidth = 2;
+    [SerializeField] private Color depthRayColor = Color.red;
+    [SerializeField] private Color secondDepthRayColor = Color.green;
+    [Tooltip("Thickness of the depth meter rays, in sim units")]
+    [SerializeField] private float depthRayThickness = 1.5f;
 
     /// <summary>Which forces are drawn, indexed by BodyForce</summary>
     internal readonly bool[] shown = new bool[ArrowsPerBody];
@@ -60,6 +64,8 @@ public class Visualiser : MonoBehaviour
     internal bool showDepthLines;
     /// <summary>Hides the arrows, values and scale readings while another view replaces the scene</summary>
     internal bool hidden;
+    /// <summary>Centre and length of each depth meter's ray, null for a meter that isn't out. Odd indices are second rays</summary>
+    internal readonly Vector4?[] depthRays = new Vector4?[DepthMeters.MaxMeters];
 
     /// <summary>Text written on each scale, null for none</summary>
     internal readonly string[] scaleTexts = new string[RigidBodies3D.MaxScales];
@@ -75,6 +81,12 @@ public class Visualiser : MonoBehaviour
     private RenderParams rp;
     private CommandBuffer cmd;
     private bool drawArrows;
+    private Material rayMaterial;
+    private Material secondRayMaterial;
+    private Material rayDepthMaterial;
+    private RenderParams rayParams;
+    private RenderParams secondRayParams;
+    private Mesh rayMesh;
 
     private ComputeBuffer statesBuffer;
     private ComputeBuffer forcesBuffer;
@@ -93,6 +105,24 @@ public class Visualiser : MonoBehaviour
 
         if (mesh == null)
             mesh = CreateArrowMesh();
+
+        if (rayMaterial == null)
+        {
+            // Built-in shader, so no material asset is needed
+            rayMaterial = new Material(Shader.Find("Hidden/Internal-Colored"));
+            rayMaterial.SetInt("_ZTest", (int)CompareFunction.LessEqual);
+            rayMaterial.SetInt("_ZWrite", 1);
+            rayMaterial.SetInt("_Cull", (int)CullMode.Off);
+            rayParams = new RenderParams(rayMaterial);
+            secondRayMaterial = new Material(rayMaterial);
+            secondRayParams = new RenderParams(secondRayMaterial);
+            rayMesh = Resources.GetBuiltinResource<Mesh>("Cube.fbx");
+
+            // Writes depth but leaves the colour alone, for the fluid's own depth and thickness textures
+            rayDepthMaterial = new Material(rayMaterial);
+            rayDepthMaterial.SetInt("_SrcBlend", (int)BlendMode.Zero);
+            rayDepthMaterial.SetInt("_DstBlend", (int)BlendMode.One);
+        }
 
         ComputeHelper.Release(commandBuf);
         commandBuf = ComputeHelper.CreateCommandBuffer();
@@ -113,6 +143,18 @@ public class Visualiser : MonoBehaviour
         Shader.SetGlobalFloat("depthLines", showDepthLines ? 1 : 0);
         Shader.SetGlobalColor("depthLineColor", depthLineColor);
         Shader.SetGlobalFloat("depthLineWidth", depthLineWidth);
+
+        // Part of the scene, so the screen-space fluid refracts them
+        if (!hidden && rayMaterial != null)
+        {
+            rayMaterial.color = depthRayColor;
+            secondRayMaterial.color = secondDepthRayColor;
+            for (int i = 0; i < depthRays.Length; i++)
+            {
+                if (depthRays[i] is Vector4 r)
+                    Graphics.RenderMesh(i % 2 == 0 ? rayParams : secondRayParams, rayMesh, 0, RayTransform(r));
+            }
+        }
 
         int shownForces = 0;
         for (int i = 0; i < ArrowsPerBody; i++)
@@ -147,6 +189,24 @@ public class Visualiser : MonoBehaviour
 
         cmd.SetViewProjectionMatrices(cam.worldToCameraMatrix, cam.projectionMatrix);
         cmd.DrawMeshInstancedIndirect(mesh, 0, material, 0, commandBuf, 0, rp.matProps);
+    }
+
+    /// <summary>Depth only, so the depth meter rays hide the screen-space fluid behind them</summary>
+    public void DrawRayDepth(CommandBuffer fluidCommands)
+    {
+        if (rayDepthMaterial == null) return;
+
+        foreach (Vector4? ray in depthRays)
+        {
+            if (ray is Vector4 r)
+                fluidCommands.DrawMesh(rayMesh, RayTransform(r), rayDepthMaterial, 0, 0);
+        }
+    }
+
+    /// <summary>A vertical ray from its centre (xyz) and length (w)</summary>
+    private Matrix4x4 RayTransform(Vector4 ray)
+    {
+        return Matrix4x4.TRS(ray, Quaternion.identity, new Vector3(depthRayThickness, ray.w, depthRayThickness));
     }
 
     /// <summary>Places the force value labels and the scale readings</summary>
@@ -369,6 +429,9 @@ public class Visualiser : MonoBehaviour
     {
         ReleaseBuffer();
         Destroy(mesh);
+        Destroy(rayMaterial);
+        Destroy(secondRayMaterial);
+        Destroy(rayDepthMaterial);
     }
 
     private void ReleaseBuffer() => ComputeHelper.Release(commandBuf);

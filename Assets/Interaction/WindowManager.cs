@@ -13,6 +13,27 @@ public class WindowManager : MonoBehaviour
     /// <summary>Field indices of an object window</summary>
     private const int ObjectVolume = 1, ObjectSubmerged = 5, ObjectDisplaced = 6;
 
+    /// <summary>Field indices of a depth meter window</summary>
+    private const int DepthReading = 0, DepthGraph = 1, DepthSecondRay = 2;
+
+    /// <summary>Field indices of a stopwatch window, and the buttons in its row</summary>
+    private const int StopwatchTime = 0, StopwatchButtons = 1;
+    private const int StartStopButton = 0;
+
+    /// <summary>One open stopwatch</summary>
+    private class Stopwatch
+    {
+        public Window window;
+        public bool running;
+        /// <summary>Simulation time when it last started</summary>
+        public float startedAt;
+        /// <summary>Time counted before it last started</summary>
+        public float counted;
+    }
+
+    /// <summary>How far a new second ray starts from the first, in sim units</summary>
+    private const float SecondRaySpacing = 40;
+
     /// <summary>New object densities, in kg/m³</summary>
     private static readonly (string name, float density)[] Materials =
     {
@@ -31,6 +52,10 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private RenderAPI renderApi;
     [Tooltip("How far one scroll wheel notch moves a dragged scale or object, in sim units")]
     [SerializeField] private float dragScrollStep = 10f;
+    [Tooltip("Width and height of the invisible box for grabbing a depth meter's ray, in sim units. Much thicker than the ray so it's easy to hit")]
+    [SerializeField] private float depthRayGrabSize = 16f;
+    [Tooltip("Seconds of simulation time the depth meter graphs show")]
+    [SerializeField, Range(5, DepthMeters.MaxHistory)] private float depthGraphSeconds = 30f;
 
     /// <summary>Each scale's window, null for a scale that isn't out</summary>
     private readonly Window[] scaleWindows = new Window[RigidBodies3D.MaxScales];
@@ -41,8 +66,17 @@ public class WindowManager : MonoBehaviour
     /// <summary>The wave generator's window, null when it's closed</summary>
     private Window waveWindow;
 
+    /// <summary>Each depth meter's window, null for one that isn't out. Window w owns rays 2w and 2w + 1</summary>
+    private readonly Window[] depthWindows = new Window[DepthMeters.MaxMeters / 2];
+    /// <summary>The depth readings last shown in the windows</summary>
+    private int shownDepthRevision = -1;
+
+    private readonly List<Stopwatch> stopwatches = new();
+
     /// <summary>Id of the body being dragged, -1 when there's none</summary>
     private int draggedBody = -1;
+    /// <summary>The depth meter being dragged, -1 when there's none</summary>
+    private int draggedMeter = -1;
     private Plane dragPlane;
     private Vector3 dragOffset;
 
@@ -50,6 +84,8 @@ public class WindowManager : MonoBehaviour
     {
         UpdateScales();
         UpdateSubmerged();
+        UpdateDepthMeters();
+        UpdateStopwatches();
         DragBody();
         BringClickedWindowToFront();
     }
@@ -272,6 +308,175 @@ public class WindowManager : MonoBehaviour
         };
     }
 
+    /// <summary>Adds a depth meter's ray to the tank, with a window showing the fluid's height there over time</summary>
+    public void CreateDepthMeterWindow()
+    {
+        int meter = Array.FindIndex(depthWindows, open => !open);
+        if (meter < 0)
+            return;
+
+        int firstRay = 2 * meter, secondRay = firstRay + 1;
+
+        api.AddDepthMeter(firstRay);
+        Window window = CreateWindow($"Depth meter {meter + 1}",
+            new Field { name = "Height", fieldType = FieldType.Readout, unit = "cm" },
+            new Field { name = "Height over time", fieldType = FieldType.Graph, unit = "cm", graphSeconds = depthGraphSeconds, graphMinRange = 2 },
+            new Field { name = "Second ray", fieldType = FieldType.Toggle, isOn = false });
+        depthWindows[meter] = window;
+
+        ShowDepthReading(meter);
+        window.FieldChanged += _ => SetSecondRay(meter, window.fields[DepthSecondRay].isOn);
+
+        window.Closed += () =>
+        {
+            api.RemoveDepthMeter(firstRay);
+            api.RemoveDepthMeter(secondRay);
+            renderApi.HideDepthRay(firstRay);
+            renderApi.HideDepthRay(secondRay);
+            depthWindows[meter] = null;
+        };
+    }
+
+    /// <summary>Adds a depth meter's second ray beside the first, towards the middle of the tank so it starts inside, or removes it</summary>
+    private void SetSecondRay(int meter, bool on)
+    {
+        int secondRay = 2 * meter + 1;
+
+        if (on)
+        {
+            Vector3 first = api.GetDepthMeterPosition(2 * meter);
+            api.AddDepthMeter(secondRay);
+            api.MoveDepthMeter(secondRay, first.x - Mathf.Sign(first.x) * SecondRaySpacing, first.z);
+        }
+        else
+        {
+            api.RemoveDepthMeter(secondRay);
+            renderApi.HideDepthRay(secondRay);
+        }
+
+        ShowDepthReading(meter);
+    }
+
+    /// <summary>Keeps each depth meter's ray and window up to date</summary>
+    private void UpdateDepthMeters()
+    {
+        bool newReadings = false;
+
+        for (int meter = 0; meter < depthWindows.Length; meter++)
+        {
+            if (!depthWindows[meter])
+                continue;
+
+            for (int ray = 2 * meter; ray <= 2 * meter + 1; ray++)
+            {
+                if (api.HasDepthMeter(ray))
+                    renderApi.ShowDepthRay(ray, api.GetDepthMeterPosition(ray), api.GetDepthRayLength());
+            }
+
+            if (api.DepthMeterRevision != shownDepthRevision)
+            {
+                ShowDepthReading(meter);
+                newReadings = true;
+            }
+        }
+
+        if (newReadings)
+            shownDepthRevision = api.DepthMeterRevision;
+    }
+
+    /// <summary>Writes a depth meter's reading and history to its window. A hidden reading isn't calculated</summary>
+    private void ShowDepthReading(int meter)
+    {
+        const float CentimetresPerMetre = 100;
+        Window window = depthWindows[meter];
+
+        if (window.IsFieldVisible(DepthReading))
+        {
+            Field reading = window.fields[DepthReading];
+            reading.value = api.GetDepthMeterReading(2 * meter) * CentimetresPerMetre;
+            window.SetField(DepthReading, reading);
+        }
+
+        if (window.IsFieldVisible(DepthGraph))
+        {
+            Field graph = window.fields[DepthGraph];
+            graph.graphSeconds = depthGraphSeconds;
+
+            Vector2[] Line(int ray)
+            {
+                Vector2[] points = api.GetDepthMeterHistory(ray, depthGraphSeconds);
+                for (int i = 0; i < points.Length; i++)
+                    points[i].y *= CentimetresPerMetre;
+                return points;
+            }
+
+            int secondRay = 2 * meter + 1;
+            graph.graphLines = api.HasDepthMeter(secondRay) ? new[] { Line(2 * meter), Line(secondRay) } : new[] { Line(2 * meter) };
+            window.SetField(DepthGraph, graph);
+        }
+    }
+
+    /// <summary>Window with a stopwatch that counts simulation time</summary>
+    public void CreateStopwatchWindow()
+    {
+        Stopwatch stopwatch = new()
+        {
+            window = CreateWindow("Stopwatch",
+                new Field { name = "Time", fieldType = FieldType.Readout, unit = "s", format = "0.00" },
+                new Field { fieldType = FieldType.Buttons, options = new[] { "Start", "Reset" } })
+        };
+        stopwatches.Add(stopwatch);
+
+        stopwatch.window.FieldChanged += _ => OnStopwatchButton(stopwatch);
+        stopwatch.window.Closed += () => stopwatches.Remove(stopwatch);
+    }
+
+    /// <summary>Start/Stop starts or holds the count. Reset stops it and clears it</summary>
+    private void OnStopwatchButton(Stopwatch stopwatch)
+    {
+        Field buttons = stopwatch.window.fields[StopwatchButtons];
+        float now = api.GetSimulationTime();
+
+        if (buttons.selected == StartStopButton)
+        {
+            if (stopwatch.running)
+                stopwatch.counted += now - stopwatch.startedAt;
+            else
+                stopwatch.startedAt = now;
+
+            stopwatch.running = !stopwatch.running;
+        }
+        else
+        {
+            stopwatch.running = false;
+            stopwatch.counted = 0;
+        }
+
+        buttons.options = new[] { stopwatch.running ? "Stop" : "Start", "Reset" };
+        stopwatch.window.SetField(StopwatchButtons, buttons);
+        ShowStopwatch(stopwatch);
+    }
+
+    private void UpdateStopwatches()
+    {
+        foreach (Stopwatch stopwatch in stopwatches)
+        {
+            if (stopwatch.running)
+                ShowStopwatch(stopwatch);
+        }
+    }
+
+    /// <summary>Writes the stopwatch's time to its window. A hidden reading isn't written</summary>
+    private void ShowStopwatch(Stopwatch stopwatch)
+    {
+        if (!stopwatch.window.IsFieldVisible(StopwatchTime))
+            return;
+
+        Field time = stopwatch.window.fields[StopwatchTime];
+        time.value = stopwatch.counted + (stopwatch.running ? api.GetSimulationTime() - stopwatch.startedAt : 0);
+        stopwatch.window.SetField(StopwatchTime, time);
+    }
+
     /// <summary>Spawns the next scale with a window showing its reading</summary>
     public void CreateScaleWindow()
     {
@@ -316,7 +521,10 @@ public class WindowManager : MonoBehaviour
         }
     }
 
-    /// <summary>Right mouse drags a scale or object around, the scroll wheel moves it nearer or further</summary>
+    /// <summary>Where the dragged depth meter or body is now</summary>
+    private Vector3 DraggedPosition() => draggedMeter >= 0 ? api.GetDepthMeterPosition(draggedMeter) : api.GetBodyPosition(draggedBody);
+
+    /// <summary>Right mouse drags a scale, object or depth meter around, the scroll wheel moves it nearer or further</summary>
     private void DragBody()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
@@ -335,32 +543,52 @@ public class WindowManager : MonoBehaviour
                 }
             }
 
-            if (draggedBody >= 0)
+            for (int depthRay = 0; depthRay < DepthMeters.MaxMeters; depthRay++)
+            {
+                if (depthWindows[depthRay / 2] && api.HasDepthMeter(depthRay) && api.GetDepthMeterBounds(depthRay, depthRayGrabSize).IntersectRay(ray, out float distance) && distance < nearest)
+                {
+                    nearest = distance;
+                    draggedBody = -1;
+                    draggedMeter = depthRay;
+                }
+            }
+
+            if (draggedBody >= 0 || draggedMeter >= 0)
             {
                 Vector3 grabbed = ray.GetPoint(nearest);
                 dragPlane = new Plane(-Camera.main.transform.forward, grabbed);
-                dragOffset = api.GetBodyPosition(draggedBody) - grabbed;
+                dragOffset = DraggedPosition() - grabbed;
             }
         }
 
-        if (draggedBody < 0)
+        if (draggedBody < 0 && draggedMeter < 0)
             return;
 
-        // Closing the window removes the body mid-drag
-        if (!Input.GetMouseButton(1) || !api.HasBody(draggedBody))
+        // Closing the window removes it mid-drag
+        bool removed = draggedMeter >= 0 ? !api.HasDepthMeter(draggedMeter) : !api.HasBody(draggedBody);
+        if (!Input.GetMouseButton(1) || removed)
         {
-            api.ReleaseBody(draggedBody);
+            if (draggedBody >= 0)
+                api.ReleaseBody(draggedBody);
+
             draggedBody = -1;
+            draggedMeter = -1;
             return;
         }
 
-        // Scrolling up moves it away. Measured from the body, so scrolling into a wall doesn't build up
+        // Scrolling up moves it away. Measured from where it is, so scrolling into a wall doesn't build up
         float scroll = Input.mouseScrollDelta.y;
         if (scroll != 0)
-            dragPlane = new Plane(dragPlane.normal, api.GetBodyPosition(draggedBody) - dragOffset - scroll * dragScrollStep * dragPlane.normal);
+            dragPlane = new Plane(dragPlane.normal, DraggedPosition() - dragOffset - scroll * dragScrollStep * dragPlane.normal);
 
-        if (dragPlane.Raycast(ray, out float enter))
-            api.MoveBody(draggedBody, ray.GetPoint(enter) + dragOffset);
+        if (!dragPlane.Raycast(ray, out float enter))
+            return;
+
+        Vector3 target = ray.GetPoint(enter) + dragOffset;
+        if (draggedMeter >= 0)
+            api.MoveDepthMeter(draggedMeter, target.x, target.z);
+        else
+            api.MoveBody(draggedBody, target);
     }
 
     /// <summary>Opens a window with these fields</summary>
