@@ -38,6 +38,16 @@ float4 SpikyGradient(float distance, float radius, float factor, float4 towardsN
     return factor * overlap * overlap * towardsNeighbour;
 }
 
+// Cohesion kernel (Akinci et al. 2013): pulls neighbours together, but pushes closer than about 0.28 of the radius so
+// particles can't clump. factor = 32 / (π h⁹)
+float CohesionKernel(float distance, float radius, float factor)
+{
+    float spline = Pow3((radius - distance) * distance);
+    if (2.0 * distance <= radius)
+        spline = 2.0 * spline - Pow3(radius * radius) / 64.0;
+    return factor * spline;
+}
+
 // Density a wall adds to a nearby particle, as if there were fluid beyond it
 float3 WallDensity(float3 x)
 {

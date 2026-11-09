@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// <summary>Kinds of field a window can show</summary>
@@ -11,7 +12,9 @@ public enum FieldType
     Numeric,
     Dropdown,
     Toggle,
-    Readout  // Shows a value the user can't edit
+    Readout,  // Shows a value the user can't edit
+    Separator,  // A thin line between groups of fields
+    Foldout  // A row that shows or hides the fields after it
 }
 
 /// <summary>One field of a window</summary>
@@ -31,8 +34,11 @@ public struct Field
     public string[] options;
     public int selected;
 
-    // Toggle
+    // Toggle, and whether a Foldout is open
     public bool isOn;
+
+    // Foldout: how many of the fields after it are inside
+    public int foldedFields;
 
     /// <summary>Height of the field's UI, in pixels</summary>
     public readonly int GetHeight()
@@ -43,6 +49,8 @@ public struct Field
             FieldType.Dropdown => 100,
             FieldType.Toggle => 56,
             FieldType.Readout => 56,
+            FieldType.Separator => FieldUI.SeparatorHeight,
+            FieldType.Foldout => 56,
             _ => throw new Exception($"There is no height for {fieldType}"),
         };
     }
@@ -53,6 +61,8 @@ public class Window : MonoBehaviour
 {
     private const float HoverGrowth = 1.05f;
     private const float DoubleClickTime = 0.3f;
+    /// <summary>Empty space under a window's contents, in pixels</summary>
+    private const float BottomPadding = 10;
 
     [SerializeField] private RectTransform top;
     [SerializeField] private RectTransform background;
@@ -76,6 +86,9 @@ public class Window : MonoBehaviour
 
     [SerializeField] private bool topBarHeld;
     private Vector3 mouseOffset;
+    private Vector3 pressPosition;
+    /// <summary>False until the mouse moves past the drag threshold, so clicks don't ungroup</summary>
+    private bool dragging;
     private Window hovered;
     private bool highlighted;
     private float lastTopBarClick;
@@ -96,6 +109,22 @@ public class Window : MonoBehaviour
     {
         if (!topBarHeld)
             return;
+
+        if (!dragging)
+        {
+            if (Input.GetMouseButtonUp(0))
+            {
+                topBarHeld = false;
+                return;
+            }
+            if (Vector3.Distance(Input.mousePosition, pressPosition) < EventSystem.current.pixelDragThreshold)
+                return;
+
+            dragging = true;
+            Window outermost = GetComponentsInParent<Window>().Last();
+            if (outermost != this)
+                transform.SetParent(outermost.transform.parent, true);
+        }
 
         transform.position = Input.mousePosition + mouseOffset;
 
@@ -229,24 +258,51 @@ public class Window : MonoBehaviour
             Destroy(child.gameObject);
         fieldUIs.Clear();
 
-        int totalHeight = 0;
-
         for (int i = 0; i < fields.Count; i++)
         {
             FieldUI ui = Instantiate(fieldPrefab, background);
-            ((RectTransform)ui.transform).anchoredPosition = new Vector2(0, -totalHeight);
             ui.Bind(fields[i], i);
             ui.Changed += (index, f) =>
             {
                 fields[index] = f;
-                changed.Add(index);
+                if (f.fieldType == FieldType.Foldout)
+                    LayoutFields();
+                else
+                    changed.Add(index);
             };
             fieldUIs.Add(ui);
+        }
 
+        LayoutFields();
+    }
+
+    /// <summary>Stacks the fields down the window, leaving out those in a closed foldout</summary>
+    private void LayoutFields()
+    {
+        int totalHeight = 0;
+        int hiddenUntil = 0;
+
+        for (int i = 0; i < fields.Count; i++)
+        {
+            bool shown = i >= hiddenUntil;
+            fieldUIs[i].gameObject.SetActive(shown);
+            if (!shown)
+                continue;
+
+            ((RectTransform)fieldUIs[i].transform).anchoredPosition = new Vector2(0, -totalHeight);
             totalHeight += fields[i].GetHeight();
+
+            if (fields[i].fieldType == FieldType.Foldout && !fields[i].isOn)
+                hiddenUntil = i + 1 + fields[i].foldedFields;
         }
 
         ResizeBackground(totalHeight);
+    }
+
+    /// <summary>False when a closed foldout, a minimised window or a minimised group hides the field</summary>
+    public bool IsFieldVisible(int index)
+    {
+        return fieldUIs[index].gameObject.activeInHierarchy;
     }
 
     /// <summary>Doesn't raise FieldChanged</summary>
@@ -270,7 +326,7 @@ public class Window : MonoBehaviour
         background.anchorMin = new Vector2(background.anchorMin.x, 1f);
         background.anchorMax = new Vector2(background.anchorMax.x, 1f);
         background.anchoredPosition = new Vector2(background.anchoredPosition.x, 0f);
-        background.sizeDelta = new Vector2(background.sizeDelta.x, totalHeight);
+        background.sizeDelta = new Vector2(background.sizeDelta.x, totalHeight + BottomPadding);
     }
 
     /// <summary>Closes the window at the end of the frame</summary>
@@ -288,16 +344,13 @@ public class Window : MonoBehaviour
     /// <summary>Starts dragging the window. A double click renames it</summary>
     public void OnTopBarClick()
     {
-        Window outermost = GetComponentsInParent<Window>().Last();
-        if (outermost != this)
-            transform.SetParent(outermost.transform.parent, true);
-
         if (Time.unscaledTime - lastTopBarClick < DoubleClickTime)
             title.Select();
         lastTopBarClick = Time.unscaledTime;
 
         topBarHeld = true;
-        Vector3 mousePos = Input.mousePosition;
-        mouseOffset = transform.position - mousePos;
+        dragging = false;
+        pressPosition = Input.mousePosition;
+        mouseOffset = transform.position - pressPosition;
     }
 }

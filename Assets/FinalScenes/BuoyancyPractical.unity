@@ -1106,7 +1106,7 @@ MonoBehaviour:
       m_Calls:
       - m_Target: {fileID: 1218924492}
         m_TargetAssemblyTypeName: WindowManager, Assembly-CSharp
-        m_MethodName: CreateVisualisationWindow
+        m_MethodName: CreateScaleWindow
         m_Mode: 1
         m_Arguments:
           m_ObjectArgument: {fileID: 0}
@@ -7129,8 +7129,9 @@ MonoBehaviour:
     mouseRadius: 100
     collisionDamping: 0.083
     solverIterations: 4
-    relaxation: 0.04
+    relaxation: 0.02
     artificialPressure: 0.1
+    cohesion: 100
     restDensity: 1
     highViscosity: 0
     lowViscosity: 1
@@ -7138,9 +7139,9 @@ MonoBehaviour:
     bodyFriction: 1
     bodies: []
   particleRadius: 0.5
-  targetFrameRate: 120
+  targetFrameRate: 60
   useRealDeltaTime: 0
-  fakeFramerate: 120
+  fakeFramerate: 30
   forceSmoothingTime: 0.25
   compute: {fileID: 7200000, guid: b5e4a0cf884ba434689f3c17b13c18b3, type: 3}
   spawn: {fileID: 1788287365}
@@ -7170,9 +7171,9 @@ MonoBehaviour:
   useJitter: 1
   jitterStrength: 0.5
   tankPadding:
-    x: 20
-    y: 20
-    z: 20
+    x: 30
+    y: 30
+    z: 30
 --- !u!4 &1788287366
 Transform:
   m_ObjectHideFlags: 0
@@ -8311,12 +8312,12 @@ MonoBehaviour:
   smoothShader: {fileID: 4800000, guid: 263f14a47c0b07d46b83cf77ce1cbe1d, type: 3}
   compositeShader: {fileID: 4800000, guid: 39fe820113504c54fb6a619cd4d32981, type: 3}
   settings:
-    particleRenderRadius: 1.5
-    smoothingRadius: 3
+    renderRadiusScale: 0.75
+    smoothingRadiusScale: 2
     smoothingIterations: 2
-    depthRangeSigma: 1.5
-    maxScreenRadius: 0.02
-    extinction: {x: 0.05, y: 0.02, z: 0.0016}
+    depthRangeScale: 0.75
+    maxScreenRadius: 0.06
+    extinction: {x: 0.0262, y: 0.0105, z: 0.00084}
     refractionStrength: 0.15
     maxRefractionOffset: 0.03
     debugView: 0
@@ -8432,6 +8433,8 @@ MonoBehaviour:
   valueFontSize: 10
   forcePerNewton: 1
   scaleColor: {r: 0, g: 0, b: 0, a: 1}
+  depthLineColor: {r: 1, g: 1, b: 1, a: 1}
+  depthLineWidth: 2
 --- !u!114 &2059809248
 MonoBehaviour:
   m_ObjectHideFlags: 0

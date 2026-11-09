@@ -168,7 +168,14 @@ public class SimulationAPI : MonoBehaviour
         return bounds;
     }
 
-    /// <summary>In N. In fluid it reads the bodies' weight minus their buoyancy</summary>
+    /// <summary>Only bodies asked about each frame get measured, so don't ask while the reading is hidden</summary>
+    /// <returns>How much of the body is under the fluid, from 0 to 100</returns>
+    public float GetSubmergedPercent(int id)
+    {
+        return 100 * manager.SubmergedFraction(id);
+    }
+
+    /// <summary>In N. In fluid it reads the bodies' weight minus their buoyancy. Only read back while something asks for it</summary>
     public float GetScaleReading(int scale)
     {
         return manager.ScaleForce(scale) / ForceScale;
@@ -191,7 +198,7 @@ public class SimulationAPI : MonoBehaviour
     }
 
     /// <summary>Turns a volume in m³ into a sim body radius</summary>
-    private float ToSimRadius(BodyShape3D shape, float volume)
+    internal float ToSimRadius(BodyShape3D shape, float volume)
     {
         if (volume <= 0)
             throw new ArgumentOutOfRangeException(nameof(volume), volume, "The volume has to be above 0.");

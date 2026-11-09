@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -8,6 +9,9 @@ public class WindowManager : MonoBehaviour
 {
     /// <summary>Field indices of a scale window</summary>
     private const int ScaleWeight = 0, ScaleShownInWorld = 1;
+
+    /// <summary>Field index of an object window's submerged percent</summary>
+    private const int ObjectSubmerged = 5;
 
     /// <summary>New object densities, in kg/m³</summary>
     private static readonly (string name, float density)[] Materials =
@@ -29,6 +33,9 @@ public class WindowManager : MonoBehaviour
     /// <summary>Each scale's window, null for a scale that isn't out</summary>
     private readonly Window[] scaleWindows = new Window[RigidBodies3D.MaxScales];
 
+    /// <summary>Each open object window and the id of its body</summary>
+    private readonly List<(Window window, int body)> objectWindows = new();
+
     /// <summary>-1 when no scale is being dragged</summary>
     private int draggedScale = -1;
     private Plane dragPlane;
@@ -37,6 +44,7 @@ public class WindowManager : MonoBehaviour
     private void Update()
     {
         UpdateScales();
+        UpdateSubmerged();
         DragScale();
         BringClickedWindowToFront();
     }
@@ -77,7 +85,9 @@ public class WindowManager : MonoBehaviour
             new() { name = "Mass", fieldType = FieldType.Numeric, value = Materials[Wood].density * Litres / 1000, min = 0.1f, max = 80, unit = "kg" },
             new() { name = "Volume", fieldType = FieldType.Numeric, value = Litres, min = 0.5f, max = 10, unit = "L" },
             new() { name = "Density", fieldType = FieldType.Dropdown, options = Materials.Select(m => $"{m.name} ({m.density} kg/m³)").ToArray(), selected = Wood },
-            new() { name = "Shape", fieldType = FieldType.Dropdown, options = Enum.GetNames(typeof(BodyShape3D)) }
+            new() { name = "Shape", fieldType = FieldType.Dropdown, options = Enum.GetNames(typeof(BodyShape3D)).Where(name => name != nameof(BodyShape3D.Scale)).ToArray() },
+            new() { name = "Measurements", fieldType = FieldType.Foldout, foldedFields = 1 },
+            new() { name = "Submerged percent", fieldType = FieldType.Readout, unit = "%" }
         };
 
         int id = api.AddBody((BodyShape3D)fields[Shape].selected, fields[Volume].value / 1000, fields[Mass].value);
@@ -104,7 +114,27 @@ public class WindowManager : MonoBehaviour
                 api.SetBodyShape(id, (BodyShape3D)window.fields[Shape].selected, volume.value / 1000);
         };
 
-        window.Closed += () => api.RemoveBody(id);
+        objectWindows.Add((window, id));
+
+        window.Closed += () =>
+        {
+            api.RemoveBody(id);
+            objectWindows.Remove((window, id));
+        };
+    }
+
+    /// <summary>Shows how submerged each object is. A hidden reading isn't calculated</summary>
+    private void UpdateSubmerged()
+    {
+        foreach ((Window window, int body) in objectWindows)
+        {
+            if (!window.IsFieldVisible(ObjectSubmerged))
+                continue;
+
+            Field submerged = window.fields[ObjectSubmerged];
+            submerged.value = api.GetSubmergedPercent(body);
+            window.SetField(ObjectSubmerged, submerged);
+        }
     }
 
     /// <summary>Window to edit the fluid's density and viscosity</summary>
@@ -151,18 +181,21 @@ public class WindowManager : MonoBehaviour
         window.FieldChanged += _ => api.SetGravity(window.fields[0].value);
     }
 
-    /// <summary>Toggles for which force arrows and values are drawn</summary>
+    /// <summary>Toggles for which force arrows and values are drawn, and the depth lines</summary>
     public void CreateVisualisationWindow()
     {
         const int Resultant = (int)BodyForce.Resultant;
         BodyForce[] forces = (BodyForce[])Enum.GetValues(typeof(BodyForce));
         int values = forces.Length;
+        int depthLines = values + 2;  // After the separator
 
         renderApi.SetNewtonScale(api.ForceScale);
 
         Window window = CreateWindow("Visualisation", forces
             .Select(force => new Field { name = force.ToString(), fieldType = FieldType.Toggle, isOn = renderApi.IsForceDrawn(force) })
             .Append(new Field { name = "Values", fieldType = FieldType.Toggle, isOn = renderApi.AreForceValuesDrawn() })
+            .Append(new Field { fieldType = FieldType.Separator })
+            .Append(new Field { name = "Depth lines", fieldType = FieldType.Toggle, isOn = renderApi.AreDepthLinesDrawn() })
             .ToArray());
 
         window.FieldChanged += index =>
@@ -170,6 +203,12 @@ public class WindowManager : MonoBehaviour
             if (index == values)
             {
                 renderApi.DrawForceValues(window.fields[values].isOn);
+                return;
+            }
+
+            if (index == depthLines)
+            {
+                renderApi.DrawDepthLines(window.fields[depthLines].isOn);
                 return;
             }
 
@@ -218,13 +257,13 @@ public class WindowManager : MonoBehaviour
         };
     }
 
-    /// <summary>Shows each scale's reading in its window and on the scale</summary>
+    /// <summary>Shows each scale's reading in its window and on the scale. A hidden reading isn't calculated</summary>
     private void UpdateScales()
     {
         for (int scale = 0; scale < scaleWindows.Length; scale++)
         {
             Window window = scaleWindows[scale];
-            if (!window)
+            if (!window || !window.IsFieldVisible(ScaleWeight))
                 continue;
 
             Field weight = window.fields[ScaleWeight];

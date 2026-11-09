@@ -6,18 +6,18 @@ using UnityEngine.Rendering;
 [Serializable]
 public struct ScreenSpaceFluidSettings
 {
-    [Tooltip("Radius of the sphere drawn for each particle, in world units. About 0.6 times the rest spacing (2.5 in 3DSandbox), so neighbouring spheres overlap into one surface without looking blobby. Separate from the simulation's particleRadius, which would leave gaps")]
-    public float particleRenderRadius;
+    [Tooltip("Radius of the sphere drawn for each particle, in spawn spacings (PBF holds the fluid at that spacing). Above 0.71 the spheres close the gaps between particles, so the scene doesn't show through as specks")]
+    public float renderRadiusScale;
 
     [Header("Smoothing")]
-    [Tooltip("Radius of the depth and thickness smoothing in world units (3 standard deviations). A little more than the rest spacing (2.5 in 3DSandbox), so the bumps between neighbouring spheres are smoothed away")]
-    public float smoothingRadius;
+    [Tooltip("Radius of the depth and thickness smoothing, in spawn spacings (3 standard deviations). About 2, so the bumps between neighbouring spheres are smoothed away")]
+    public float smoothingRadiusScale;
     [Tooltip("Horizontal and vertical pass pairs of the depth smoothing. Each pair is two full-screen passes; 0 leaves the raw spheres")]
     [Range(0, 4)] public int smoothingIterations;
-    [Tooltip("Depth difference, in world units, over which the depth smoothing stops blending: taps whose raw depth differs by 3 times this get almost no weight. About the render radius, so bumps on one surface blend but separate sheets of fluid and body edges stay sharp")]
-    public float depthRangeSigma;
-    [Tooltip("Largest smoothing radius as a fraction of the screen height. Caps the cost when fluid is close to the camera; a fraction gives the same look at every resolution")]
-    [Range(0.002f, 0.03f)] public float maxScreenRadius;
+    [Tooltip("Depth difference, in spawn spacings, over which the depth smoothing stops blending. It grows with distance from the pixel so tilted surfaces still smooth, while separate sheets of fluid and body edges stay sharp")]
+    public float depthRangeScale;
+    [Tooltip("Largest smoothing radius as a fraction of the screen height. Wider blurs space their samples out instead of taking more, so this mainly limits how far apart they get")]
+    [Range(0.002f, 0.15f)] public float maxScreenRadius;
 
     [Header("Shading")]
     [Tooltip("Absorption per world unit of fluid for red, green and blue: the scene seen through t units of fluid is multiplied by exp(-t * extinction). The defaults let about 70% of red through the 31-unit-deep settled fluid in 3DSandbox and 5% through the 250-unit tank, so deeper fluid looks bluer")]
@@ -63,6 +63,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
     private static readonly int PositionsId = Shader.PropertyToID("Positions");
     private static readonly int ParticleRenderRadiusId = Shader.PropertyToID("particleRenderRadius");
+    private static readonly int ThicknessScaleId = Shader.PropertyToID("thicknessScale");
     private static readonly int SmoothingRadiusId = Shader.PropertyToID("smoothingRadius");
     private static readonly int DepthRangeSigmaId = Shader.PropertyToID("depthRangeSigma");
     private static readonly int MaxScreenRadiusId = Shader.PropertyToID("maxScreenRadius");
@@ -95,11 +96,11 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     [SerializeField] private Shader compositeShader;
     [SerializeField] private ScreenSpaceFluidSettings settings = new()
     {
-        particleRenderRadius = 1.5f,
-        smoothingRadius = 3,
+        renderRadiusScale = 0.75f,
+        smoothingRadiusScale = 2f,
         smoothingIterations = 2,
-        depthRangeSigma = 1.5f,
-        maxScreenRadius = 0.02f,
+        depthRangeScale = 0.75f,
+        maxScreenRadius = 0.06f,
         extinction = new(0.012f, 0.005f, 0.0016f),
         refractionStrength = 0.25f,
         maxRefractionOffset = 0.03f,
@@ -120,6 +121,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
     private int gaussVPass;
     private int compositePass;
     private int numParticles;
+    private float spacing;
     private BodyRenderer bodyRenderer;
 
     /// <summary>Creates the materials and binds the particle positions</summary>
@@ -145,15 +147,19 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
         particleMaterial.SetBuffer(PositionsId, sim.Buffers["Positions"]);
         numParticles = sim.numParticles;
+        spacing = sim.Spacing;
         this.bodyRenderer = bodyRenderer;
     }
 
     /// <summary>Records this frame's fluid rendering commands</summary>
     public void Draw()
     {
-        particleMaterial.SetFloat(ParticleRenderRadiusId, settings.particleRenderRadius);
-        smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadius);
-        smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeSigma);
+        float renderRadius = settings.renderRadiusScale * spacing;
+        particleMaterial.SetFloat(ParticleRenderRadiusId, renderRadius);
+        // Each particle adds its real volume (one spacing cube) to the thickness, whatever size it's drawn
+        particleMaterial.SetFloat(ThicknessScaleId, Mathf.Pow(spacing, 3) / (4f / 3f * Mathf.PI * Mathf.Pow(renderRadius, 3)));
+        smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadiusScale * spacing);
+        smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeScale * spacing);
         smoothMaterial.SetFloat(MaxScreenRadiusId, settings.maxScreenRadius);
         compositeMaterial.SetVector(ExtinctionId, settings.extinction);
         compositeMaterial.SetFloat(RefractionStrengthId, settings.refractionStrength);

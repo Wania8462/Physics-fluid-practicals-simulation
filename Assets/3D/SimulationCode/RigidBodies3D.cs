@@ -25,6 +25,8 @@ public struct RigidBodySettings3D
     [Tooltip("Euler angles in degrees")]
     public float3 bodyRotation;
     public float boundaryBodyMass;
+    [Tooltip("Held still, but the fluid's push on it is still measured. Scales are always held")]
+    public bool fixedInPlace;
     [Tooltip("Scales only: which scale this is, below RigidBodies3D.MaxScales")]
     public int scale;
 
@@ -94,6 +96,8 @@ public static class RigidBodies3D
     public const int ContactSlotSize = (4 + MaxScales) * 4;
 
     public const int ForceCount = 3;
+    /// <summary>Matches ForceBuoyancy in RigidBodyMath3D.hlsl</summary>
+    public const int ForceBuoyancy = 2;
 
     /// <summary>Builds every valid body in the inspector array</summary>
     public static RigidBodyData3D Build(RigidBodySettings3D[] inspectorBodies, Spawn3DParticles spawn, float interactionRadius, Tank tank)
@@ -200,10 +204,10 @@ public static class RigidBodies3D
         }
     }
 
-    /// <summary>Sets a body's mass and how hard it is to spin. Scales can't move</summary>
+    /// <summary>Sets a body's mass and how hard it is to spin. Scales and fixed bodies can't move</summary>
     public static void SetMassProperties(ref RigidBodyProperties3D properties, RigidBodySettings3D body)
     {
-        if (body.shape == BodyShape3D.Scale)
+        if (body.shape == BodyShape3D.Scale || body.fixedInPlace)
         {
             properties.invMass = 0;
             properties.invInertia = float4.zero;
@@ -230,6 +234,59 @@ public static class RigidBodies3D
         BodyShape3D.Sphere => math.pow(3 * volume / (4 * math.PI), 1f / 3),
         _ => throw new ArgumentOutOfRangeException(nameof(shape), $"Rigid bodies: no volume for shape {shape}")
     };
+
+    // ponytail: assumes one flat waterline per body, so a wave along its side averages out
+    /// <summary>Finds the waterline from how many surface particles are wet, then the volume below it</summary>
+    /// <param name="body">Index into data</param>
+    /// <param name="up">World up in the body's frame</param>
+    /// <param name="wet">How many of the body's surface particles touch fluid</param>
+    /// <returns>How much of the body is under the fluid, from 0 to 1</returns>
+    public static float SubmergedFraction(RigidBodyData3D data, int body, float3 up, int wet)
+    {
+        RigidBodyProperties3D properties = data.properties[body];
+        int count = (int)properties.count;
+        if (wet <= 0) return 0;
+        if (wet >= count) return 1;
+
+        float[] heights = new float[count];
+        for (int i = 0; i < count; i++)
+            heights[i] = math.dot(data.boundaryRestPositions[(int)properties.start + i].xyz, up);
+        Array.Sort(heights);
+
+        return (float)VolumeFractionBelow(data.settings[body], up, heights[wet]);
+    }
+
+    /// <summary>Fraction of a body's volume below a flat plane</summary>
+    /// <param name="height">The plane's height above the body's centre</param>
+    private static double VolumeFractionBelow(RigidBodySettings3D body, float3 up, float height)
+    {
+        double depth = height / (2.0 * body.bodyRadius);
+
+        switch (body.shape)
+        {
+            case BodyShape3D.Sphere:
+                double x = math.saturate(depth + 0.5);
+                return x * x * (3 - 2 * x);
+
+            case BodyShape3D.Cube:
+                // Tiny instead of zero, because the sum below divides by each component
+                double3 n = math.max(math.abs((double3)up), 1e-3);
+                double level = depth + (n.x + n.y + n.z) / 2;
+
+                double volume = 0;
+                for (int corner = 0; corner < 8; corner++)
+                {
+                    int a = corner & 1, b = (corner >> 1) & 1, c = (corner >> 2) & 1;
+                    double past = math.max(level - (a * n.x + b * n.y + c * n.z), 0.0);
+                    volume += ((a ^ b ^ c) == 0 ? 1 : -1) * past * past * past;
+                }
+
+                return math.saturate(volume / (6 * n.x * n.y * n.z));
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no submerged volume for shape {body.shape}");
+        }
+    }
 
     /// <summary>Applies mass changes live, other settings need a reset</summary>
     public static void UpdateMasses(RigidBodyData3D data, RigidBodySettings3D[] inspectorBodies, ComputeBuffer propertiesBuffer)
@@ -283,6 +340,7 @@ public static class RigidBodies3D
         buffers["BodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
         buffers["SmoothedBodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
         buffers["BodyScaleForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * MaxScales);
+        buffers["BodySubmergedSlots"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount);
 
         buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];
         buffers["BoundaryVelocitiesRO"] = buffers["BoundaryVelocities"];

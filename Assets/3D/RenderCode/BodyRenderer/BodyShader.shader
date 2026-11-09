@@ -20,6 +20,9 @@ Shader "Custom/Body3D"
         {
             float4 pos : SV_POSITION;
             float3 normal : TEXCOORD0;
+            float worldY : TEXCOORD1;
+            // Bottom and height of the body in the world, and whether it gets depth lines
+            nointerpolation float3 depthSpan : TEXCOORD2;
         };
 
         v2f vert(appdata_base v, uint instanceID : SV_InstanceID)
@@ -44,6 +47,13 @@ Shader "Custom/Body3D"
             o.pos = mul(UNITY_MATRIX_VP, float4(world, 1));
             // Only rotation changes the normals
             o.normal = QuaternionRotate(state.rotation, v.normal);
+            o.worldY = world.y;
+
+            // How far the rotated body reaches up and down from its centre
+            float centreY = state.position.y + QuaternionRotate(state.rotation, -props.centerOfMass.xyz).y;
+            float boxHalfHeight = dot(abs(QuaternionRotateInverse(state.rotation, float3(0, 1, 0))), halfExtents);
+            float halfHeight = lerp(props.size.x, boxHalfHeight, isBox);
+            o.depthSpan = float3(centreY - halfHeight, 2 * halfHeight, props.shape != ShapeScale);
             return o;
         }
         ENDCG
@@ -58,14 +68,27 @@ Shader "Custom/Body3D"
             #pragma fragment frag
 
             static const float ambient = 0.3;
+            static const float DepthLineCount = 4;
 
             float4 color;
             float3 lightDirection;  // Global, set by RenderManager
+            // Globals, set by Visualiser
+            float depthLines;
+            float4 depthLineColor;
+            float depthLineWidth;  // In pixels
 
             float4 frag(v2f i) : SV_Target
             {
                 float diffuse = saturate(dot(normalize(i.normal), -normalize(lightDirection)));
-                return color * (ambient + (1 - ambient) * diffuse);
+                float lighting = ambient + (1 - ambient) * diffuse;
+
+                // Evenly spaced horizontal lines between the body's bottom and top, a fixed number of pixels thick
+                float t = (i.worldY - i.depthSpan.x) / i.depthSpan.y * (DepthLineCount + 1);
+                float pixelsAway = abs(t - round(t)) / max(fwidth(t), 1e-5);
+                float onLine = saturate(depthLineWidth / 2 - pixelsAway + 0.5) * (t > 0.5) * (t < DepthLineCount + 0.5);
+
+                // The lines are lit like the body, so they shade with it
+                return lerp(color, depthLineColor, onLine * depthLines * i.depthSpan.z) * lighting;
             }
             ENDCG
         }

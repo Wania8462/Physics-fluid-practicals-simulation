@@ -226,7 +226,7 @@ void PlaceBoundaryParticles (uint3 id : SV_DispatchThreadID)
 
 // ---------- Body integration: one thread group per body ----------
 
-// Scales are static: only the CPU moves them
+// Scales and fixed bodies are static: only the CPU moves them
 bool IsStatic(uint body)
 {
     return BodyProperties[body].invMass == 0;
@@ -263,7 +263,8 @@ void BodyAdvancePredictedStates (uint3 id : SV_DispatchThreadID)
 void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
     uint body = groupId.x;
-    if (body >= numBodies || IsStatic(body)) return;
+    // Fixed bodies still sum the push so their buoyancy is recorded, scales don't need it
+    if (body >= numBodies || BodyProperties[body].shape == ShapeScale) return;
 
     RigidBodyProperties properties = BodyProperties[body];
     float3 centerOfMass = BodyStates[body].position.xyz;
@@ -287,7 +288,8 @@ void SumCouplingForces (uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThr
 [numthreads(1,1,1)]
 void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= numBodies || IsStatic(id.x)) return;
+    // A fixed body records its buoyancy, then its zero invMass and invInertia keep it still
+    if (id.x >= numBodies || BodyProperties[id.x].shape == ShapeScale) return;
 
     RigidBodyProperties properties = BodyProperties[id.x];
     RigidBodyState state = BodyStates[id.x];
@@ -554,6 +556,44 @@ void SmoothBodyForces (uint3 id : SV_DispatchThreadID)
         uint i = id.x * BodyForceCount + f;
         SmoothedBodyForces[i] = lerp(SmoothedBodyForces[i], BodyForces[i], forceSmoothing);
     }
+}
+
+// ---------- Submerged percent ----------
+
+// Whether any fluid particle is close enough to a point to count as touching it
+bool HasFluidNear(float4 position)
+{
+    uint3 cellPosition = GetCellPosition(position);
+
+    for (uint i = 0; i < 27; i++)
+    {
+        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
+        uint3 neighbourPos = cellPosition + cellOffset;
+        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
+        uint cell = GetCellIndex(neighbourPos);
+
+        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
+        {
+            if (DistanceSq(position, PositionsRO[SortedIndicesRO[j]]) < wetDistanceSq)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+// Counts how many of one body's surface particles touch fluid, split across the group's threads
+[numthreads(BodyReductionThreads,1,1)]
+void MeasureSubmergedBody (uint3 threadId : SV_GroupThreadID)
+{
+    RigidBodyProperties properties = BodyProperties[submergedBody];
+
+    float wet = 0;
+    for (uint i = properties.start + threadId.x; i < properties.start + properties.count; i += BodyReductionThreads)
+        wet += HasFluidNear(BoundaryPositionsRO[i]) ? 1.0 : 0.0;
+
+    float3 up = QuaternionRotate(QuaternionConjugate(BodyStates[submergedBody].rotation), float3(0, 1, 0));
+    BodySubmergedSlots[submergedBody * BodyReductionThreads + threadId.x] = float4(up, wet);
 }
 
 // ---------- Fluid against bodies ----------

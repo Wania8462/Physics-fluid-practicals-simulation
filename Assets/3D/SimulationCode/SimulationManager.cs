@@ -26,6 +26,8 @@ public struct SimulationSettings3D
     public float relaxation;
     [Tooltip("Strength k of the s_corr term that keeps particles from clumping, 0.1 in the PBF paper")]
     public float artificialPressure;
+    [Tooltip("Pulls neighbouring particles together, mostly at the free surface, so the fluid holds together instead of scattering. Sim acceleration, 0 turns it off")]
+    public float cohesion;
     [Tooltip("Sim mass per sim unit³. Only sets the particles' mass, the fluid's packing doesn't change")]
     public float restDensity;
 
@@ -51,6 +53,8 @@ public class SimulationManager : MonoBehaviour
     [SerializeField] private float fakeFramerate = 120;
     [Tooltip("Seconds the drawn body forces take to ease about two thirds of the way to a new value. 0 draws them raw")]
     [SerializeField] private float forceSmoothingTime = 0.25f;
+    [Tooltip("How near fluid has to be to a body's surface to count as touching it, in particle spacings. Lower it if floating bodies read too submerged. Keep it under interactionRadius")]
+    [SerializeField] private float wetDistance = 1.5f;
 
     [Header("References")]
     [SerializeField] private ComputeShader compute;
@@ -65,6 +69,8 @@ public class SimulationManager : MonoBehaviour
     [HideInInspector] public int numParticles;
     [HideInInspector] public int numBoundaryParticles;
     public float InteractionRadius => settings.interactionRadius;
+    /// <summary>Spawn spacing, which PBF holds the fluid at</summary>
+    public float Spacing => spawn.Spacing;
     /// <summary>The tank the fluid is simulated in</summary>
     public Tank Tank => spawn.GetTank(particleRadius);
 
@@ -81,7 +87,13 @@ public class SimulationManager : MonoBehaviour
     /// <summary>Which body slot each scale uses, -1 if it isn't placed</summary>
     private readonly int[] scaleSlots = Enumerable.Repeat(-1, RigidBodies3D.MaxScales).ToArray();
     private Vector4[] scaleForces;
+    private bool scaleReadingWanted;
     internal bool draggingScale;
+
+    /// <summary>Ids of the bodies asked about since the last measurement</summary>
+    private readonly HashSet<int> submergedWanted = new();
+    /// <summary>World up in the body's frame, and the wet particle count in w. One per body per thread</summary>
+    private Vector4[] submergedSlots;
 
     private int3 threadGroups;
     private int3 gridThreadGroups;
@@ -130,10 +142,31 @@ public class SimulationManager : MonoBehaviour
 
         UpdateComputeSettings();
 
-        if (scaleSlots.Any(slot => slot >= 0))
+        if (scaleReadingWanted)
             AsyncGPUReadback.Request(Buffers["BodyScaleForces"], request => { if (!request.hasError) scaleForces = request.GetData<Vector4>().ToArray(); });
+        scaleReadingWanted = false;
+
+        MeasureSubmergedBodies();
 
         StepFinished?.Invoke();
+    }
+
+    /// <summary>Measures the bodies the UI asked about and requests the results</summary>
+    private void MeasureSubmergedBodies()
+    {
+        if (submergedWanted.Count == 0) return;
+
+        foreach (int id in submergedWanted)
+        {
+            int body = bodies.inspectorIndices.IndexOf(id);
+            if (body < 0) continue;
+
+            compute.SetInt("submergedBody", body);
+            compute.Dispatch(KernelIDs["MeasureSubmergedBody"], 1, 1, 1);
+        }
+
+        submergedWanted.Clear();
+        AsyncGPUReadback.Request(Buffers["BodySubmergedSlots"], request => { if (!request.hasError) submergedSlots = request.GetData<Vector4>().ToArray(); });
     }
 
     private void ExecuteStep()
@@ -417,12 +450,43 @@ public class SimulationManager : MonoBehaviour
     internal float ScaleForce(int scale)
     {
         ScaleSlot(scale);
+        scaleReadingWanted = true;
         if (scaleForces == null) return 0;
 
         float force = 0;
         for (int i = scale; i < scaleForces.Length; i += RigidBodies3D.MaxScales)
             force += scaleForces[i].y;
         return force;
+    }
+
+    /// <summary>Only bodies asked about each frame get measured. Lags a frame or two behind</summary>
+    /// <returns>How much of the body is under the fluid, from 0 to 1</returns>
+    internal float SubmergedFraction(int id)
+    {
+        CheckBodyId(id);
+        submergedWanted.Add(id);
+
+        const int Threads = RigidBodies3D.ReductionThreads;
+        int body = bodies.inspectorIndices.IndexOf(id);
+
+        // Bodies may have been added or removed since this was read back
+        if (submergedSlots == null || (body + 1) * Threads > submergedSlots.Length) return 0;
+
+        int wet = 0;
+        for (int thread = 0; thread < Threads; thread++)
+            wet += (int)submergedSlots[body * Threads + thread].w;
+
+        return RigidBodies3D.SubmergedFraction(bodies, body, ((float4)submergedSlots[body * Threads]).xyz, wet);
+    }
+
+    /// <summary>The fluid's push on a body, smoothed like its arrow, in sim force units. Stalls for a GPU readback</summary>
+    internal Vector3 BodyBuoyancy(int id)
+    {
+        CheckBodyId(id);
+        Vector4[] force = new Vector4[1];
+        int index = bodies.inspectorIndices.IndexOf(id) * RigidBodies3D.ForceCount + RigidBodies3D.ForceBuoyancy;
+        Buffers["SmoothedBodyForces"].GetData(force, 0, index, 1);
+        return force[0];
     }
 
     /// <summary>The body slot of a scale. Throws if the scale isn't placed</summary>
@@ -502,6 +566,9 @@ public class SimulationManager : MonoBehaviour
         compute.SetFloat("artificialPressure", settings.artificialPressure);
         compute.SetFloat("poly6Factor", 315 / (64 * math.PI * math.pow(h, 9)));
         compute.SetFloat("spikyGradFactor", 45 / (math.PI * math.pow(h, 6)));
+        compute.SetFloat("cohesion", settings.cohesion);
+        compute.SetFloat("cohesionFactor", 32 / (math.PI * math.pow(h, 9)));
+        compute.SetFloat("wetDistanceSq", math.pow(wetDistance * spawn.Spacing, 2));
 
         compute.SetFloat("highViscosity", settings.highViscosity);
         compute.SetFloat("lowViscosity", settings.lowViscosity);

@@ -40,8 +40,8 @@ flowchart TD
     P -- "yes" --> STEP["SimulationStep(): once, or 10× for PgDn"]
     P -- "no (paused)" --> CS
     STEP --> CS["UpdateComputeSettings(): inspector values → GPU"]
-    CS --> SC{"Any scale placed?"}
-    SC -- yes --> RB["AsyncGPUReadback of BodyScaleForces"]
+    CS --> SC{"Did the UI ask for a reading?"}
+    SC -- yes --> RB["Measure the asked-for bodies, AsyncGPUReadback of the results"]
     SC -- no --> FIN
     RB --> FIN["Raise StepFinished"]
     FIN --> DRAW["RenderManager.Draw(): tank → fluid → bodies → force arrows"]
@@ -53,7 +53,7 @@ flowchart TD
 Notes:
 
 - **Body edits** (`AddBody`, `RemoveBody`, `ReshapeBody`) read the body states back from the GPU, rebuild the body buffers, and queue the old buffers. They are released at the start of the *next* frame, because this frame's draw calls may still be using them.
-- **Scale readings** come back via async readback, so they lag a frame or two.
+- **Readings** (scale weight, submerged percent) come back via async readback, so they lag a frame or two. They are only calculated for what the UI asked about that frame, and `WindowManager` doesn't ask about a field `Window.IsFieldVisible` says is hidden.
 - **dt** is `1 / fakeFramerate` unless `useRealDeltaTime` is on. A fixed dt keeps the solver stable when the frame rate dips.
 
 ### One simulation step (`SimulationStep`)
@@ -136,7 +136,7 @@ The UI never touches the simulation directly. Every window goes through **`Simul
 |---|---|
 | [`WindowManager`](../Assets/Interaction/WindowManager.cs) | Opens each kind of window, wires its fields to the APIs, groups windows, drags scales, brings clicked windows to the front |
 | [`Window`](../Assets/Interaction/Window.cs) | One draggable window: title bar, a list of `Field`s, minimise, close, grouping |
-| `Field` (in `Window.cs`) | Plain data for one row: `Numeric`, `Dropdown`, `Toggle` or `Readout` |
+| `Field` (in `Window.cs`) | Plain data for one row: `Numeric`, `Dropdown`, `Toggle`, `Readout`, `Separator` or `Foldout` (shows or hides the `foldedFields` after it) |
 | [`FieldUI`](../Assets/Interaction/FieldUI.cs) | The prefab that shows one `Field`: slider + input box, dropdown, or toggle |
 | [`SimulationAPI`](../Assets/3D/SimulationCode/SimulationAPI.cs) / [`RenderAPI`](../Assets/3D/RenderCode/RenderAPI.cs) | The only things windows call |
 | [`CameraController`](../Assets/Interaction/CameraController.cs) | Fly camera |
@@ -216,11 +216,11 @@ flowchart TD
 
 | Window | Fields | Does |
 |---|---|---|
-| **New object** | Mass (kg), Volume (L), Density (material dropdown), Shape | Spawns a body as soon as it opens. Mass always follows from material × volume: editing Mass changes Volume to match (clamped), and editing Volume or the material changes Mass. Calls `SetBodyMass`, plus `SetBodyShape` when the size or shape changed. Closing removes the body. Renamable and groupable |
+| **New object** | Mass (kg), Volume (L), Density (material dropdown), Shape, Measurements foldout holding Submerged percent (readout, %) | Spawns a body as soon as it opens. Mass always follows from material × volume: editing Mass changes Volume to match (clamped), and editing Volume or the material changes Mass. Calls `SetBodyMass`, plus `SetBodyShape` when the size or shape changed. Closing removes the body. Renamable and groupable |
 | **Fluid properties** | Density (kg/m³), Viscosity (mPa·s) | `SetDensity`, `SetViscosity` |
 | **Gravity properties** | Gravity (m/s²) | `SetGravity` |
 | **Visualisation** | A toggle per `BodyForce`, plus Values | `RenderAPI.DrawForce` / `DrawForceValues`. *Resultant* and the individual forces turn each other off |
-| **Scale N** | Weight (readout, N), Show in world | Places a scale (up to `MaxScales`, the button does nothing past that). Every frame, `UpdateScales` writes the reading to the readout and the in-world label. Closing removes the scale |
+| **Scale N** | Weight (readout, N), Show in world | Places a scale (up to `MaxScales`, the button does nothing past that). While the readout is visible, `UpdateScales` writes the reading to it and to the text on the scale each frame. Minimised, both keep the last value. Closing removes the scale |
 
 **Moving scales**: right-click a scale in the world and drag. It slides on a plane facing the camera. While a scale is being dragged, `SetDraggingScale(true)` stops right mouse from also pulling the bodies.
 
@@ -332,6 +332,16 @@ $$
 s_{\text{corr}} = -k \left(\frac{W(r_{ij})}{W(0.2h)}\right)^4
 $$
 
+Because the constraint is one-sided, nothing holds the free surface together, so **`ApplyViscosity`** also adds Akinci et al. (2013) cohesion between fluid particles. $C$ attracts, but turns repulsive below about $0.28h$, so it can't cause the clumping (tensile instability) that unclamping the constraint would. The factor $2/(\rho_i + \rho_j)$, capped at 2, makes it act mostly on the under-dense surface. $\gamma$ is `cohesion`:
+
+$$
+\Delta\mathbf v_i = \Delta t\,\gamma \sum_j V\,\frac{2}{\rho_i + \rho_j}\,C(r_{ij})\,\hat{\mathbf r}_{ij}
+\qquad
+C(r) = \frac{32}{\pi h^9}\begin{cases} 2(h-r)^3r^3 - \frac{h^6}{64} & r \le \frac h2 \\ (h-r)^3r^3 & \frac h2 < r \le h \end{cases}
+$$
+
+It's fluid to fluid only, so it never pulls on the bodies.
+
 **`ApplyDeltaPositions`** then **`ResolveBoundaries`**: apply the moves, then clamp any particle that went past a wall back inside. `collisionDamping` is the distance it's placed inside the wall. Despite the name it's a distance, not a damping factor.
 
 More iterations means less compression in deep fluid. Fluid at the bottom is squeezed hardest, because the corrections take several iterations to travel up the column.
@@ -434,6 +444,10 @@ $$
 
 `ScaleForce` sums the y-components over every body, and `SimulationAPI` converts that to newtons. Under water this reads **weight − buoyancy**.
 
+### Submerged percent
+
+`MeasureSubmergedBody` runs once per body whose readout is visible and counts the surface particles with fluid within `wetDistance` particle spacings. `RigidBodies3D.SubmergedFraction` takes that count as the number of surface particles below the waterline, which gives the waterline's height, then works out the sphere's or cube's volume below it. It looks at the geometry only, so it doesn't depend on the buoyancy force. It assumes one flat waterline per body.
+
 ### Units ([`SimulationAPI`](../Assets/3D/SimulationCode/SimulationAPI.cs))
 
 The solver works in sim units. The API converts at the boundary:
@@ -458,6 +472,7 @@ These were picked by eye to look like water on Earth, not measured.
 | `solverIterations` | PBF iterations per step. More means less compression at depth |
 | `relaxation` | $\varepsilon$. Too low explodes, too high is springy |
 | `artificialPressure` | $k$ in $s_{\text{corr}}$. 0.1 in the paper |
+| `cohesion` | $\gamma$. Pulls the surface together. 0 is off, too high pulls splashes into round droplets |
 | `restDensity` | Particle mass only. Sets buoyancy, not packing |
 | `highViscosity`, `lowViscosity` | Summed viscosity coefficient (see note above) |
 | `boundaryFriction` | Fluid drag at body surfaces. ≤ 0 lets fluid tunnel |
@@ -484,11 +499,11 @@ These were picked by eye to look like water on Earth, not measured.
 
 ## 4. Decision log
 
-Newest at the top. One row per decision: what was chosen, what it replaced, and why.
+Newest at the top. One row per decision: what was chosen, what it replaced, and why. Features from the requirements are not skipped.
 
 | Date | Decision | Why | Alternatives considered |
 |---|---|---|---|
-| | | | |
+| 2026-11-04 | Switched the fluid from Clavet double-density relaxation to PBF | SPH coudldn't simulate buoyancy as it only considered immediate neighbours | Keep Clavet and leave a small gap under the bodies |
 
 <!--
 Example row:

@@ -10,8 +10,8 @@ Shader "Hidden/ScreenSpaceFluid/Smooth"
         CGINCLUDE
         #include "Assets/3D/RenderCode/ScreenSpace/FluidCommon.hlsl"
 
-        // Most pixels sampled on each side
-        #define MAX_RADIUS 64
+        // Most samples on each side. Wider blurs space them out instead
+        #define MAX_TAPS 24
 
         // Read by name, Blit's _MainTex gave the wrong texture in Play mode
         Texture2D _FluidDepthTex;  // R: smoothed depth, G: raw depth
@@ -23,13 +23,15 @@ Shader "Hidden/ScreenSpaceFluid/Smooth"
         float maxScreenRadius;  // Fraction of the target's height
         float depthRangeSigma;  // World units
 
-        // Blur radius in pixels for a pixel at this depth, and how fast the blur fades out
-        int BlurRadius(float eyeDepth, float height, out float falloff)
+        // Samples per side and the pixel step between them, for a blur radius in pixels and how fast it fades out
+        int BlurTaps(float pixelsPerUnit, float height, out float stride, out float falloff)
         {
-            float radius = min(smoothingRadius * PixelsPerUnit(eyeDepth, height), maxScreenRadius * height);
-
+            float radius = min(smoothingRadius * pixelsPerUnit, maxScreenRadius * height);
             falloff = -4.5 / max(radius * radius, 1e-4);
-            return min((int)ceil(radius), MAX_RADIUS);
+
+            int taps = clamp((int)ceil(radius), 1, MAX_TAPS);
+            stride = radius / taps;
+            return taps;
         }
 
         // Smooths depth but keeps edges sharp, so separate blobs don't merge
@@ -42,19 +44,22 @@ Shader "Hidden/ScreenSpaceFluid/Smooth"
             if (centre.g >= FLUID_NO_DEPTH)
                 return centre;
 
-            float falloff;
-            int radius = BlurRadius(centre.g, height, falloff);
-            float rangeFalloff = -0.5 / max(depthRangeSigma * depthRangeSigma, 1e-6);
+            float pixelsPerUnit = PixelsPerUnit(centre.g, height);
+            float stride, falloff;
+            int taps = BlurTaps(pixelsPerUnit, height, stride, falloff);
             float2 texelStep = direction / float2(width, height);
 
             // Pixels with no fluid get no weight
             float sum = 0;
             float weightSum = 0;
-            [loop] for (int x = -radius; x <= radius; x++)
+            [loop] for (int t = -taps; t <= taps; t++)
             {
+                float x = t * stride;
                 float2 tap = SamplePoint(source, uv + texelStep * x).rg;
                 float depthDifference = tap.g - centre.g;
-                float weight = exp(x * x * falloff + depthDifference * depthDifference * rangeFalloff);
+                // Tolerates slopes up to 45 degrees, so tilted surfaces still blend
+                float range = depthRangeSigma + abs(x) / pixelsPerUnit;
+                float weight = exp(x * x * falloff - 0.5 * depthDifference * depthDifference / (range * range));
                 sum += tap.r * weight;
                 weightSum += weight;
             }
@@ -73,14 +78,15 @@ Shader "Hidden/ScreenSpaceFluid/Smooth"
             if (eyeDepth >= FLUID_NO_DEPTH)
                 return centre;
 
-            float falloff;
-            int radius = BlurRadius(eyeDepth, height, falloff);
+            float stride, falloff;
+            int taps = BlurTaps(PixelsPerUnit(eyeDepth, height), height, stride, falloff);
             float2 texelStep = direction / float2(width, height);
 
             float sum = 0;
             float weightSum = 0;
-            [loop] for (int x = -radius; x <= radius; x++)
+            [loop] for (int t = -taps; t <= taps; t++)
             {
+                float x = t * stride;
                 float weight = exp(x * x * falloff);
                 sum += SamplePoint(source, uv + texelStep * x).r * weight;
                 weightSum += weight;

@@ -10,6 +10,7 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
 
         StructuredBuffer<float4> Positions;
         float particleRenderRadius;
+        float thicknessScale;  // Particle volume / sphere volume
 
         static const float2 Corners[6] =
         {
@@ -79,7 +80,7 @@ Shader "Hidden/ScreenSpaceFluid/Particles"
             float4 frag(v2f i) : SV_Target
             {
                 float chord = 2 * sqrt(saturate(1 - dot(i.corner, i.corner))) * particleRenderRadius;
-                return float4(chord, 0, 0, 0);
+                return float4(chord * thicknessScale, 0, 0, 0);
             }
             ENDCG
         }

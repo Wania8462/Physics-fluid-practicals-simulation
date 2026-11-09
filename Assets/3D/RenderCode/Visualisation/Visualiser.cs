@@ -47,11 +47,17 @@ public class Visualiser : MonoBehaviour
     [SerializeField] internal float forcePerNewton = 1;
     [Tooltip("Colour of the scale readings, on their sides and in their labels")]
     [SerializeField] private Color scaleColor = Color.black;
+    [Tooltip("Colour of the depth lines. Keep it different from the body colour")]
+    [SerializeField] private Color depthLineColor = Color.white;
+    [Tooltip("Thickness of the depth lines, in pixels")]
+    [SerializeField] private float depthLineWidth = 2;
 
     /// <summary>Which forces are drawn, indexed by BodyForce</summary>
     internal readonly bool[] shown = new bool[ArrowsPerBody];
     /// <summary>Whether each force value is written next to its arrow</summary>
     internal bool showValues;
+    /// <summary>Whether the bodies show horizontal lines marking how deep they sit</summary>
+    internal bool showDepthLines;
 
     /// <summary>Text written on each scale, null for none</summary>
     internal readonly string[] scaleTexts = new string[RigidBodies3D.MaxScales];
@@ -101,6 +107,11 @@ public class Visualiser : MonoBehaviour
     /// <summary>Updates the arrow settings and requests the forces for the values</summary>
     public void Draw()
     {
+        // The body shader reads these
+        Shader.SetGlobalFloat("depthLines", showDepthLines ? 1 : 0);
+        Shader.SetGlobalColor("depthLineColor", depthLineColor);
+        Shader.SetGlobalFloat("depthLineWidth", depthLineWidth);
+
         int shownForces = 0;
         for (int i = 0; i < ArrowsPerBody; i++)
             if (shown[i])
@@ -341,6 +352,8 @@ public class Visualiser : MonoBehaviour
     private void OnDisable()
     {
         Camera.onPreRender -= RecordArrows;
+        // Globals outlive the scene, so other scenes would keep the lines
+        Shader.SetGlobalFloat("depthLines", 0);
         if (cam != null)
             cam.RemoveCommandBuffer(CameraEvent.AfterEverything, cmd);
         cmd.Release();

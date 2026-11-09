@@ -31,6 +31,7 @@
 #pragma kernel BodyCalculateVelocity
 #pragma kernel SmoothBodyForces
 #pragma kernel ResolveBodyCollisions
+#pragma kernel MeasureSubmergedBody
 
 #include "FluidMath3D.hlsl"
 #include "RigidBodyMath3D.hlsl"
@@ -79,6 +80,7 @@ RWStructuredBuffer<float4> BodyForces;
 RWStructuredBuffer<float4> SmoothedBodyForces;
 
 RWStructuredBuffer<float4> BodyScaleForces;
+RWStructuredBuffer<float4> BodySubmergedSlots;
 
 // Read-only copies of the buffers above. A kernel can only bind 8 read-write buffers
 StructuredBuffer<float4> PositionsRO;
@@ -109,6 +111,8 @@ const float relaxation;
 const float artificialPressure;
 const float poly6Factor;
 const float spikyGradFactor;
+const float cohesion;
+const float cohesionFactor;
 
 const float highViscosity;
 const float lowViscosity;
@@ -134,6 +138,8 @@ const uint numBodies;
 const float boundaryFriction;
 const float bodyFriction;
 const float forceSmoothing;
+const uint submergedBody;
+const float wetDistanceSq;
 
 void SetForceBuffer(uint index, float4 value)
 {
@@ -299,7 +305,7 @@ void ApplyForceBuffersToVelocities (uint3 id : SV_DispatchThreadID)
     Velocities[id.x] += ReadForceBuffer(id.x);
 }
 
-// Evens out the velocities of nearby particles, which makes the fluid thicker
+// Evens out the velocities of nearby particles, which makes the fluid thicker, and pulls them together
 [numthreads(64,1,1)]
 void ApplyViscosity (uint3 id : SV_DispatchThreadID)
 {
@@ -307,7 +313,9 @@ void ApplyViscosity (uint3 id : SV_DispatchThreadID)
 
     float4 position = PositionsRO[id.x];
     float4 velocity = VelocitiesRO[id.x];
+    float density = Densities[id.x];
     uint3 cellPosition = GetCellPosition(position);
+    float4 cohesionSum = 0;
 
     for (uint i = 0; i < 27; i++)
     {
@@ -324,6 +332,12 @@ void ApplyViscosity (uint3 id : SV_DispatchThreadID)
 
             float q = mag / interactionRadius;
             float4 r = UnitVector(position, PositionsRO[neighbour], mag);
+
+            // Stronger where the pair has fewer neighbours, so it mostly acts at the surface. Capped at 2 for lone
+            // particles and the first step, when Densities is still 0
+            float surfaceBoost = 2.0 / max(density + Densities[neighbour], 1.0);
+            cohesionSum += surfaceBoost * CohesionKernel(mag, interactionRadius, cohesionFactor) * r;
+
             float inwardVelocity = dot(velocity - VelocitiesRO[neighbour], r);
             if(inwardVelocity <= 0) continue;
 
@@ -332,6 +346,9 @@ void ApplyViscosity (uint3 id : SV_DispatchThreadID)
             AtomicAddForceBuffer(neighbour, impulse);
         }
     }
+
+    // Fluid neighbours only, so it never pulls on the bodies and buoyancy is unchanged
+    AtomicAddForceBuffer(id.x, dt * cohesion * particleVolume * cohesionSum);
 
     if (numBodies > 0)
         ApplyBoundaryFriction(id.x, position, velocity, cellPosition);

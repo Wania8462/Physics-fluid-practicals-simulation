@@ -45,6 +45,18 @@ public class RenderAPI : MonoBehaviour
         visualiser.showValues = draw;
     }
 
+    /// <summary>Whether the bodies show depth lines</summary>
+    public bool AreDepthLinesDrawn()
+    {
+        return visualiser.showDepthLines;
+    }
+
+    /// <summary>Draws horizontal lines on the bodies showing how deep they sit, or stops</summary>
+    public void DrawDepthLines(bool draw)
+    {
+        visualiser.showDepthLines = draw;
+    }
+
     /// <summary>Null draws nothing for the scale</summary>
     public void SetScaleText(int scale, string text)
     {

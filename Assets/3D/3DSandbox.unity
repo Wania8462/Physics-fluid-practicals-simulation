@@ -241,12 +241,12 @@ MonoBehaviour:
   smoothShader: {fileID: 4800000, guid: 263f14a47c0b07d46b83cf77ce1cbe1d, type: 3}
   compositeShader: {fileID: 4800000, guid: 39fe820113504c54fb6a619cd4d32981, type: 3}
   settings:
-    particleRenderRadius: 1.5
-    smoothingRadius: 3
+    renderRadiusScale: 0.75
+    smoothingRadiusScale: 2
     smoothingIterations: 2
-    depthRangeSigma: 1.5
-    maxScreenRadius: 0.02
-    extinction: {x: 0.05, y: 0.02, z: 0.0016}
+    depthRangeScale: 0.75
+    maxScreenRadius: 0.06
+    extinction: {x: 0.0262, y: 0.0105, z: 0.00084}
     refractionStrength: 0.15
     maxRefractionOffset: 0.03
     debugView: 0
@@ -389,6 +389,7 @@ MonoBehaviour:
     solverIterations: 4
     relaxation: 0.04
     artificialPressure: 0.1
+    cohesion: 100
     restDensity: 1
     highViscosity: 0
     lowViscosity: 1
