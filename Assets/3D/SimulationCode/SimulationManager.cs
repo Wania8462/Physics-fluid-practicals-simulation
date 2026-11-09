@@ -14,8 +14,6 @@ public struct SimulationSettings3D
     [Header("Simulation settings")]
     public float interactionRadius;
     public float gravity;
-    public float mouseAttractiveness;
-    public float mouseRadius;
     public float collisionDamping;
 
     [Header("Density")]
@@ -55,6 +53,12 @@ public class SimulationManager : MonoBehaviour
     [SerializeField] private float forceSmoothingTime = 0.25f;
     [Tooltip("How near fluid has to be to a body's surface to count as touching it, in particle spacings. Lower it if floating bodies read too submerged. Keep it under interactionRadius")]
     [SerializeField] private float wetDistance = 1.5f;
+    [Tooltip("Top speed of a thrown object, in sim units per second. At 120 steps per second, above about 360 it moves more than a particle spacing per step and can pass through fluid")]
+    [SerializeField] private float maxThrowSpeed = 300;
+    [Tooltip("Seconds of dragging that decide a throw's velocity. Higher ignores flicks, lower follows the last movement. 0 uses only the last frame")]
+    [SerializeField] private float throwSmoothingTime = 0.05f;
+    [Tooltip("Degrees per second a dragged cube turns towards lying flat while it's pushed into a wall")]
+    [SerializeField] private float wallAlignSpeed = 180;
 
     [Header("References")]
     [SerializeField] private ComputeShader compute;
@@ -73,6 +77,8 @@ public class SimulationManager : MonoBehaviour
     public float Spacing => spawn.Spacing;
     /// <summary>The tank the fluid is simulated in</summary>
     public Tank Tank => spawn.GetTank(particleRadius);
+    /// <summary>Sim seconds one step advances</summary>
+    private float StepTime => useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
 
     private Dictionary<string, int> KernelIDs;
     /// <summary>Every GPU buffer, by its name in Simulation.compute</summary>
@@ -88,12 +94,18 @@ public class SimulationManager : MonoBehaviour
     private readonly int[] scaleSlots = Enumerable.Repeat(-1, RigidBodies3D.MaxScales).ToArray();
     private Vector4[] scaleForces;
     private bool scaleReadingWanted;
-    internal bool draggingScale;
+
+    /// <summary>The body being dragged, -1 if there's none</summary>
+    private int heldBody = -1;
+    /// <summary>Smoothed velocity of the dragged body, which it keeps when released</summary>
+    private float3 heldVelocity;
 
     /// <summary>Ids of the bodies asked about since the last measurement</summary>
     private readonly HashSet<int> submergedWanted = new();
-    /// <summary>World up in the body's frame, and the wet particle count in w. One per body per thread</summary>
-    private Vector4[] submergedSlots;
+    /// <summary>World up in each body's frame</summary>
+    private Vector4[] submergedUps;
+    /// <summary>For every boundary particle, non-zero if it touches fluid</summary>
+    private uint[] boundaryWet;
 
     private int3 threadGroups;
     private int3 gridThreadGroups;
@@ -166,7 +178,8 @@ public class SimulationManager : MonoBehaviour
         }
 
         submergedWanted.Clear();
-        AsyncGPUReadback.Request(Buffers["BodySubmergedSlots"], request => { if (!request.hasError) submergedSlots = request.GetData<Vector4>().ToArray(); });
+        AsyncGPUReadback.Request(Buffers["BodySubmergedUp"], request => { if (!request.hasError) submergedUps = request.GetData<Vector4>().ToArray(); });
+        AsyncGPUReadback.Request(Buffers["BoundaryWet"], request => { if (!request.hasError) boundaryWet = request.GetData<uint>().ToArray(); });
     }
 
     private void ExecuteStep()
@@ -177,7 +190,7 @@ public class SimulationManager : MonoBehaviour
     /// <summary>One step: forces and viscosity, the PBF solver with the bodies, then body contacts</summary>
     private void SimulationStep()
     {
-        float dt = useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
+        float dt = StepTime;
         compute.SetFloat("dt", dt);
 
         compute.Dispatch(KernelIDs["ExternalForces"], threadGroups);
@@ -217,20 +230,8 @@ public class SimulationManager : MonoBehaviour
             }
         }
 
-        if (Input.GetMouseButton(0))
-        {
-            compute.SetVector("mousePosition", GetMousePos());
-            compute.Dispatch(KernelIDs["AttractToMouse"], threadGroups);
-        }
-
         if (numBodies > 0)
         {
-            if (Input.GetMouseButton(1) && !draggingScale)
-            {
-                compute.SetVector("mousePosition", GetMousePos());
-                DispatchPerBody("AttractBodiesToMouse");
-            }
-
             DispatchPerBody("SumContacts");
             DispatchPerBody("ApplyContacts");
             DispatchPerBody("BodyCalculateVelocity");
@@ -409,7 +410,7 @@ public class SimulationManager : MonoBehaviour
         RebuildBodies();
     }
 
-    /// <summary>Places a scale. Only MoveScale moves it after that</summary>
+    /// <summary>Places a scale. Only MoveBody moves it after that</summary>
     internal void AddScale(RigidBodySettings3D scale)
     {
         if (scaleSlots[scale.scale] >= 0)
@@ -425,17 +426,93 @@ public class SimulationManager : MonoBehaviour
         scaleSlots[scale] = -1;
     }
 
-    /// <summary>Teleports a scale to a new position</summary>
-    internal void MoveScale(int scale, float3 position)
+    /// <summary>Teleports a body to a new position and holds it still until ReleaseBody</summary>
+    internal void MoveBody(int id, float3 position)
     {
-        int slot = ScaleSlot(scale);
-        settings.bodies[slot].bodyPosition = position;
+        CheckBodyId(id);
 
+        // The first move of a drag and moves while paused don't count towards a throw
+        float3 frameVelocity = heldBody == id && !paused ? (position - settings.bodies[id].bodyPosition) / StepTime : float3.zero;
+        heldVelocity = math.lerp(heldVelocity, frameVelocity, 1 - Mathf.Exp(-Time.deltaTime / throwSmoothingTime));
+        heldBody = id;
+
+        settings.bodies[id].bodyPosition = position;
+        SetBodyState(id, position, float3.zero);
+    }
+
+    /// <summary>Turns a dragged cube towards lying flat on any wall it's pushed into</summary>
+    /// <returns>The position, kept inside the walls</returns>
+    internal float3 PressAgainstWalls(int id, float3 position)
+    {
+        CheckBodyId(id);
+        float radius = settings.bodies[id].bodyRadius;
+
+        // Wall contacts keep a body's surface this far from the centre
+        float3 walls = Tank.innerHalfSize - Spacing;
+
+        if (settings.bodies[id].shape != BodyShape3D.Cube || bodies == null)
+            return math.clamp(position, radius - walls, walls - radius);
+
+        int index = bodies.inspectorIndices.IndexOf(id);
+        RigidBodyState3D state = bodies.states[index];
+        Quaternion rotation = (Quaternion)new quaternion(state.rotation);
+
+        for (int axis = 0; axis < 3; axis++)
+        {
+            float3x3 basis = new float3x3((quaternion)rotation);
+            if (math.abs(position[axis]) <= walls[axis] - CubeReach(basis, radius)[axis]) continue;
+
+            int nearest = 0;
+            for (int k = 1; k < 3; k++)
+                if (math.abs(basis[k][axis]) > math.abs(basis[nearest][axis])) nearest = k;
+
+            Vector3 wall = Vector3.zero;
+            wall[axis] = math.sign(position[axis]);
+            Vector3 face = basis[nearest] * math.sign(basis[nearest][axis] * wall[axis]);
+            rotation = Quaternion.RotateTowards(rotation, Quaternion.FromToRotation(face, wall) * rotation, wallAlignSpeed * Time.deltaTime);
+        }
+
+        state.rotation = ((quaternion)rotation).value;
+        bodies.states[index] = state;
+
+        float3 reach = CubeReach(new float3x3((quaternion)rotation), radius);
+        return math.clamp(position, reach - walls, walls - reach);
+    }
+
+    /// <summary>How far a rotated cube extends from its centre along each world axis</summary>
+    private static float3 CubeReach(float3x3 basis, float radius) => radius * (math.abs(basis.c0) + math.abs(basis.c1) + math.abs(basis.c2));
+
+    /// <summary>Lets go of a dragged body, which keeps the velocity it was dragged at. Scales stay still</summary>
+    internal void ReleaseBody(int id)
+    {
+        float3 velocity = heldVelocity;
+        heldBody = -1;
+        heldVelocity = float3.zero;
+
+        // Its window may have closed mid-drag
+        if (!HasBody(id) || bodies == null || bodies.properties[bodies.inspectorIndices.IndexOf(id)].invMass == 0) return;
+
+        SetBodyState(id, settings.bodies[id].bodyPosition, math.normalizesafe(velocity) * math.min(math.length(velocity), maxThrowSpeed));
+    }
+
+    /// <summary>Writes a body's position and velocity to the GPU. It stops spinning, its rotation stays as last read back</summary>
+    private void SetBodyState(int id, float3 position, float3 velocity)
+    {
         if (bodies == null) return;
 
+        int index = bodies.inspectorIndices.IndexOf(id);
         float4 at = new(position, 0);
-        RigidBodyState3D state = new() { position = at, rotation = quaternion.identity.value, prevPosition = at, prevRotation = quaternion.identity.value };
-        Buffers["BodyStates"].SetData(new[] { state }, 0, bodies.inspectorIndices.IndexOf(slot), 1);
+        float4 rotation = bodies.states[index].rotation;
+        RigidBodyState3D state = new() { position = at, rotation = rotation, prevPosition = at, prevRotation = rotation, velocity = new float4(velocity, 0) };
+        Buffers["BodyStates"].SetData(new[] { state }, 0, index, 1);
+    }
+
+    /// <summary>Where a body is now. Stalls for a GPU readback</summary>
+    internal Vector3 BodyPosition(int id)
+    {
+        CheckBodyId(id);
+        ReadBodyStates();
+        return bodies.states[bodies.inspectorIndices.IndexOf(id)].position.xyz;
     }
 
     /// <summary>Where a scale is, if it's placed</summary>
@@ -466,17 +543,14 @@ public class SimulationManager : MonoBehaviour
         CheckBodyId(id);
         submergedWanted.Add(id);
 
-        const int Threads = RigidBodies3D.ReductionThreads;
         int body = bodies.inspectorIndices.IndexOf(id);
+        RigidBodyProperties3D properties = bodies.properties[body];
 
-        // Bodies may have been added or removed since this was read back
-        if (submergedSlots == null || (body + 1) * Threads > submergedSlots.Length) return 0;
+        // Bodies may have been added or removed since these were read back
+        if (submergedUps == null || boundaryWet == null || body >= submergedUps.Length || properties.start + properties.count > boundaryWet.Length)
+            return 0;
 
-        int wet = 0;
-        for (int thread = 0; thread < Threads; thread++)
-            wet += (int)submergedSlots[body * Threads + thread].w;
-
-        return RigidBodies3D.SubmergedFraction(bodies, body, ((float4)submergedSlots[body * Threads]).xyz, wet);
+        return RigidBodies3D.SubmergedFraction(bodies, body, ((float4)submergedUps[body]).xyz, boundaryWet);
     }
 
     /// <summary>The fluid's push on a body, smoothed like its arrow, in sim force units. Stalls for a GPU readback</summary>
@@ -490,7 +564,7 @@ public class SimulationManager : MonoBehaviour
     }
 
     /// <summary>The body slot of a scale. Throws if the scale isn't placed</summary>
-    private int ScaleSlot(int scale)
+    internal int ScaleSlot(int scale)
     {
         if (scale < 0 || scale >= scaleSlots.Length || scaleSlots[scale] < 0)
             throw new ArgumentException($"There is no scale {scale}.", nameof(scale));
@@ -498,10 +572,13 @@ public class SimulationManager : MonoBehaviour
         return scaleSlots[scale];
     }
 
+    /// <summary>Whether there's a body with this id</summary>
+    internal bool HasBody(int id) => id >= 0 && id < settings.bodies.Length && !settings.bodies[id].IsEmpty;
+
     /// <summary>Throws if there's no body with this id</summary>
     private void CheckBodyId(int id)
     {
-        if (id < 0 || id >= settings.bodies.Length || settings.bodies[id].IsEmpty)
+        if (!HasBody(id))
             throw new ArgumentException($"There is no rigid body with id {id}.", nameof(id));
     }
 
@@ -549,8 +626,6 @@ public class SimulationManager : MonoBehaviour
         compute.SetFloat("interactionRadius", settings.interactionRadius);
         compute.SetFloat("interactionRadiusSq", settings.interactionRadius * settings.interactionRadius);
         compute.SetFloat("gravity", settings.gravity);
-        compute.SetFloat("mouseAttractiveness", settings.mouseAttractiveness);
-        compute.SetFloat("mouseRadius", settings.mouseRadius);
         compute.SetFloat("collisionDamp", settings.collisionDamping);
 
         if (settings.solverIterations < 1)
@@ -678,13 +753,4 @@ public class SimulationManager : MonoBehaviour
 #endif
 
     #endregion
-
-    /// <summary>Where the cursor points on the z = 0 plane</summary>
-    private Vector4 GetMousePos()
-    {
-        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-        new Plane(Vector3.forward, 0).Raycast(ray, out float enter);
-        Vector3 point = ray.GetPoint(enter);
-        return new(point.x, point.y, point.z, 0);
-    }
 }

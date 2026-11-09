@@ -143,25 +143,45 @@ public class SimulationAPI : MonoBehaviour
         manager.RemoveScale(scale);
     }
 
-    /// <summary>The position is the base's centre, clamped inside the tank</summary>
-    public void MoveScale(int scale, Vector3 position)
+    /// <summary>The body id of a scale</summary>
+    public int GetScaleBodyId(int scale)
     {
-        manager.MoveScale(scale, ClampScale(position));
+        return manager.ScaleSlot(scale);
     }
 
-    /// <summary>Centre of the scale's base</summary>
-    public Vector3 GetScalePosition(int scale)
+    /// <summary>Whether there's a body with this id</summary>
+    public bool HasBody(int id)
     {
-        if (!manager.TryGetScalePosition(scale, out Vector3 position))
-            throw new ArgumentException($"There is no scale {scale}.", nameof(scale));
-
-        return position;
+        return manager.HasBody(id);
     }
 
-    /// <summary>Box around the scale's base and pan</summary>
-    public Bounds GetScaleBounds(int scale)
+    /// <summary>Lets go of a dragged body, throwing it at the speed it was dragged</summary>
+    public void ReleaseBody(int id)
     {
-        Vector3 position = GetScalePosition(scale);
+        manager.ReleaseBody(id);
+    }
+
+    /// <summary>Moves a body, clamped inside the tank, and holds it there. A scale's position is its base's centre</summary>
+    public void MoveBody(int id, Vector3 position)
+    {
+        bool isScale = manager.settings.bodies[id].shape == BodyShape3D.Scale;
+        manager.MoveBody(id, isScale ? ClampScale(position) : manager.PressAgainstWalls(id, position));
+    }
+
+    /// <summary>Where a body is now. Stalls for a GPU readback</summary>
+    public Vector3 GetBodyPosition(int id)
+    {
+        return manager.BodyPosition(id);
+    }
+
+    /// <summary>Box around a body, ignoring its rotation. Stalls for a GPU readback</summary>
+    public Bounds GetBodyBounds(int id)
+    {
+        RigidBodySettings3D body = manager.settings.bodies[id];
+        Vector3 position = GetBodyPosition(id);
+        if (body.shape != BodyShape3D.Scale)
+            return new(position, 2 * body.bodyRadius * Vector3.one);
+
         float3 halfExtents = RigidBodies3D.ScaleHalfExtents;
         Bounds bounds = new(position, 2 * (Vector3)halfExtents);
         bounds.Encapsulate(position + Vector3.up * (halfExtents.y + 2 * RigidBodies3D.ScalePanHalfHeight));
@@ -179,12 +199,6 @@ public class SimulationAPI : MonoBehaviour
     public float GetScaleReading(int scale)
     {
         return manager.ScaleForce(scale) / ForceScale;
-    }
-
-    /// <summary>While true, right mouse doesn't pull the bodies, so dragging a scale doesn't drag them along</summary>
-    public void SetDraggingScale(bool dragging)
-    {
-        manager.draggingScale = dragging;
     }
 
     /// <summary>Keeps the whole scale inside the tank</summary>

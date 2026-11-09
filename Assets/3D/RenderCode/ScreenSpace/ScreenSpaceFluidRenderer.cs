@@ -14,9 +14,9 @@ public struct ScreenSpaceFluidSettings
     public float smoothingRadiusScale;
     [Tooltip("Horizontal and vertical pass pairs of the depth smoothing. Each pair is two full-screen passes; 0 leaves the raw spheres")]
     [Range(0, 4)] public int smoothingIterations;
-    [Tooltip("Depth difference, in spawn spacings, over which the depth smoothing stops blending. It grows with distance from the pixel so tilted surfaces still smooth, while separate sheets of fluid and body edges stay sharp")]
+    [Tooltip("Depth difference, in spawn spacings, over which the depth smoothing stops blending: taps whose raw depth differs by 3 times this get almost no weight. About the render radius, so bumps on one surface blend but separate sheets of fluid and body edges stay sharp")]
     public float depthRangeScale;
-    [Tooltip("Largest smoothing radius as a fraction of the screen height. Wider blurs space their samples out instead of taking more, so this mainly limits how far apart they get")]
+    [Tooltip("Largest smoothing radius as a fraction of the screen height, up to 64 pixels. Caps the cost when fluid is close to the camera; a fraction gives the same look at every resolution")]
     [Range(0.002f, 0.15f)] public float maxScreenRadius;
 
     [Header("Shading")]

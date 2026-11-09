@@ -62,27 +62,23 @@ public class FieldUI : MonoBehaviour
             labelRect.sizeDelta = new Vector2(((RectTransform)transform).sizeDelta.x - 2 * labelRect.anchoredPosition.x, labelRect.sizeDelta.y);
         }
 
-        // A readout looks like a numeric field the user can't type into
         bool numeric = field.fieldType == FieldType.Numeric;
-        bool hasValue = numeric || field.fieldType == FieldType.Readout;
-        input.gameObject.SetActive(hasValue);
-        input.interactable = numeric;
-        unit.gameObject.SetActive(hasValue);
+        bool readout = field.fieldType == FieldType.Readout;
+        input.gameObject.SetActive(numeric);
+        unit.gameObject.SetActive(numeric || readout);
         slider.gameObject.SetActive(numeric);
         minText.gameObject.SetActive(numeric);
         maxText.gameObject.SetActive(numeric);
         dropdown.gameObject.SetActive(field.fieldType == FieldType.Dropdown);
         toggle.gameObject.SetActive(field.fieldType == FieldType.Toggle);
 
-        if (hasValue)
-            unit.text = field.unit;
-
-        if (field.fieldType == FieldType.Readout)
+        if (readout)
         {
-            input.SetTextWithoutNotify(field.value.ToString("0.0"));
+            ShowReadout();
         }
         else if (numeric)
         {
+            unit.text = field.unit;
             minText.text = field.min.ToString();
             maxText.text = field.max.ToString();
             slider.minValue = field.min;
@@ -116,6 +112,28 @@ public class FieldUI : MonoBehaviour
         rect.sizeDelta = new Vector2(-2 * SeparatorMargin, SeparatorThickness);
         rect.anchoredPosition = new Vector2(0, -SeparatorHeight / 2f);
         return line;
+    }
+
+    /// <summary>Writes the value and unit as one plain text against the right edge, as large as the name</summary>
+    private void ShowReadout()
+    {
+        RectTransform labelRect = label.rectTransform;
+        RectTransform unitRect = unit.rectTransform;
+        float margin = labelRect.anchoredPosition.x;
+
+        label.textWrappingMode = TextWrappingModes.NoWrap;
+        float labelWidth = label.GetPreferredValues().x;
+        labelRect.sizeDelta = new Vector2(labelWidth, labelRect.sizeDelta.y);
+
+        float left = margin + labelWidth + margin;
+        unit.fontSize = label.fontSize;
+        unit.textWrappingMode = TextWrappingModes.NoWrap;
+        unit.horizontalAlignment = HorizontalAlignmentOptions.Right;
+        unitRect.anchoredPosition = new Vector2(left, unitRect.anchoredPosition.y);
+        unitRect.sizeDelta = new Vector2(((RectTransform)transform).sizeDelta.x - left - margin, unitRect.sizeDelta.y);
+
+        string gap = field.unit == "%" ? "" : " ";
+        unit.text = $"{field.value:0.#}{gap}{field.unit}";
     }
 
     /// <summary>The field's name, with an arrow showing whether a foldout is open</summary>

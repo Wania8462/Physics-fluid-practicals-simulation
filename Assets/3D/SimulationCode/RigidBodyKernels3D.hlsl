@@ -315,20 +315,6 @@ void ApplyCouplingForces (uint3 id : SV_DispatchThreadID)
     BodyStates[id.x] = state;
 }
 
-// Right mouse pulls bodies towards the cursor
-[numthreads(1,1,1)]
-void AttractBodiesToMouse (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= numBodies || IsStatic(id.x)) return;
-
-    RigidBodyState state = BodyStates[id.x];
-    float mag = Distance(state.position, mousePosition);
-    float inRange = step(mag, mouseRadius);
-
-    state.position += inRange * dt * mouseAttractiveness * (mousePosition - state.position) / max(mag, 1e-9);
-    BodyStates[id.x] = state;
-}
-
 // ---------- Contacts with the walls and other bodies ----------
 
 // How far a point must move to get back inside the tank. Leaves a gap so fluid fits under bodies
@@ -582,18 +568,21 @@ bool HasFluidNear(float4 position)
     return false;
 }
 
-// Counts how many of one body's surface particles touch fluid, split across the group's threads
+// Marks which of one body's surface particles touch fluid, split across the group's threads
 [numthreads(BodyReductionThreads,1,1)]
 void MeasureSubmergedBody (uint3 threadId : SV_GroupThreadID)
 {
     RigidBodyProperties properties = BodyProperties[submergedBody];
 
-    float wet = 0;
     for (uint i = properties.start + threadId.x; i < properties.start + properties.count; i += BodyReductionThreads)
-        wet += HasFluidNear(BoundaryPositionsRO[i]) ? 1.0 : 0.0;
+        BoundaryWet[i] = HasFluidNear(BoundaryPositionsRO[i]) ? 1 : 0;
 
-    float3 up = QuaternionRotate(QuaternionConjugate(BodyStates[submergedBody].rotation), float3(0, 1, 0));
-    BodySubmergedSlots[submergedBody * BodyReductionThreads + threadId.x] = float4(up, wet);
+    // One thread is enough, the others would write the same value
+    if (threadId.x == 0)
+    {
+        float3 up = QuaternionRotate(QuaternionConjugate(BodyStates[submergedBody].rotation), float3(0, 1, 0));
+        BodySubmergedUp[submergedBody] = float4(up, 0);
+    }
 }
 
 // ---------- Fluid against bodies ----------

@@ -236,24 +236,44 @@ public static class RigidBodies3D
     };
 
     // ponytail: assumes one flat waterline per body, so a wave along its side averages out
-    /// <summary>Finds the waterline from how many surface particles are wet, then the volume below it</summary>
+    /// <summary>Finds the waterline from which surface particles are wet, then the volume below it</summary>
     /// <param name="body">Index into data</param>
     /// <param name="up">World up in the body's frame</param>
-    /// <param name="wet">How many of the body's surface particles touch fluid</param>
+    /// <param name="boundaryWet">For every boundary particle, non-zero if it touches fluid</param>
     /// <returns>How much of the body is under the fluid, from 0 to 1</returns>
-    public static float SubmergedFraction(RigidBodyData3D data, int body, float3 up, int wet)
+    public static float SubmergedFraction(RigidBodyData3D data, int body, float3 up, uint[] boundaryWet)
     {
         RigidBodyProperties3D properties = data.properties[body];
+        int start = (int)properties.start;
         int count = (int)properties.count;
-        if (wet <= 0) return 0;
-        if (wet >= count) return 1;
 
         float[] heights = new float[count];
+        uint[] wet = new uint[count];
+        int wrong = 0;
         for (int i = 0; i < count; i++)
-            heights[i] = math.dot(data.boundaryRestPositions[(int)properties.start + i].xyz, up);
-        Array.Sort(heights);
+        {
+            heights[i] = math.dot(data.boundaryRestPositions[start + i].xyz, up);
+            wet[i] = boundaryWet[start + i];
+            if (wet[i] != 0) wrong++;
+        }
+        Array.Sort(heights, wet);
 
-        return (float)VolumeFractionBelow(data.settings[body], up, heights[wet]);
+        // The waterline most particles agree with: wet below it and dry above it, so a puddle on top gets outvoted
+        int fewestWrong = wrong;
+        int below = 0;
+        for (int i = 0; i < count; i++)
+        {
+            wrong += wet[i] != 0 ? -1 : 1;
+            if (wrong < fewestWrong)
+            {
+                fewestWrong = wrong;
+                below = i + 1;
+            }
+        }
+
+        if (below == 0) return 0;
+        if (below == count) return 1;
+        return (float)VolumeFractionBelow(data.settings[body], up, (heights[below - 1] + heights[below]) / 2);
     }
 
     /// <summary>Fraction of a body's volume below a flat plane</summary>
@@ -340,7 +360,8 @@ public static class RigidBodies3D
         buffers["BodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
         buffers["SmoothedBodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
         buffers["BodyScaleForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * MaxScales);
-        buffers["BodySubmergedSlots"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount);
+        buffers["BodySubmergedUp"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1));
+        buffers["BoundaryWet"] = ComputeHelper.CreateStructuredBufferWithData<uint>(boundaryCount);
 
         buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];
         buffers["BoundaryVelocitiesRO"] = buffers["BoundaryVelocities"];

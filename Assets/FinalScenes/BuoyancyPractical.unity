@@ -7125,8 +7125,6 @@ MonoBehaviour:
   settings:
     interactionRadius: 6
     gravity: -20
-    mouseAttractiveness: 0
-    mouseRadius: 100
     collisionDamping: 0.083
     solverIterations: 4
     relaxation: 0.02

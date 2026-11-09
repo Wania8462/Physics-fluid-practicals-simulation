@@ -4,14 +4,14 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
-/// <summary>Opens the simulation's windows and lets the user drag scales around</summary>
+/// <summary>Opens the simulation's windows and lets the user drag scales and objects around</summary>
 public class WindowManager : MonoBehaviour
 {
     /// <summary>Field indices of a scale window</summary>
     private const int ScaleWeight = 0, ScaleShownInWorld = 1;
 
-    /// <summary>Field index of an object window's submerged percent</summary>
-    private const int ObjectSubmerged = 5;
+    /// <summary>Field indices of an object window</summary>
+    private const int ObjectVolume = 1, ObjectSubmerged = 5, ObjectDisplaced = 6;
 
     /// <summary>New object densities, in kg/m³</summary>
     private static readonly (string name, float density)[] Materials =
@@ -29,6 +29,8 @@ public class WindowManager : MonoBehaviour
     [SerializeField] private GameObject windowPrefab;
     [SerializeField] private SimulationAPI api;
     [SerializeField] private RenderAPI renderApi;
+    [Tooltip("How far one scroll wheel notch moves a dragged scale or object, in sim units")]
+    [SerializeField] private float dragScrollStep = 10f;
 
     /// <summary>Each scale's window, null for a scale that isn't out</summary>
     private readonly Window[] scaleWindows = new Window[RigidBodies3D.MaxScales];
@@ -36,8 +38,8 @@ public class WindowManager : MonoBehaviour
     /// <summary>Each open object window and the id of its body</summary>
     private readonly List<(Window window, int body)> objectWindows = new();
 
-    /// <summary>-1 when no scale is being dragged</summary>
-    private int draggedScale = -1;
+    /// <summary>Id of the body being dragged, -1 when there's none</summary>
+    private int draggedBody = -1;
     private Plane dragPlane;
     private Vector3 dragOffset;
 
@@ -45,7 +47,7 @@ public class WindowManager : MonoBehaviour
     {
         UpdateScales();
         UpdateSubmerged();
-        DragScale();
+        DragBody();
         BringClickedWindowToFront();
     }
 
@@ -76,7 +78,7 @@ public class WindowManager : MonoBehaviour
     /// <summary>Spawns a body with a window to edit its mass, volume, material and shape</summary>
     public void CreateObjectWindow()
     {
-        const int Mass = 0, Volume = 1, Density = 2, Shape = 3;
+        const int Mass = 0, Volume = ObjectVolume, Density = 2, Shape = 3;
         const int Wood = 1;
         const float Litres = 2;
 
@@ -86,8 +88,9 @@ public class WindowManager : MonoBehaviour
             new() { name = "Volume", fieldType = FieldType.Numeric, value = Litres, min = 0.5f, max = 10, unit = "L" },
             new() { name = "Density", fieldType = FieldType.Dropdown, options = Materials.Select(m => $"{m.name} ({m.density} kg/m³)").ToArray(), selected = Wood },
             new() { name = "Shape", fieldType = FieldType.Dropdown, options = Enum.GetNames(typeof(BodyShape3D)).Where(name => name != nameof(BodyShape3D.Scale)).ToArray() },
-            new() { name = "Measurements", fieldType = FieldType.Foldout, foldedFields = 1 },
-            new() { name = "Submerged percent", fieldType = FieldType.Readout, unit = "%" }
+            new() { name = "Measurements", fieldType = FieldType.Foldout, foldedFields = 2 },
+            new() { name = "Submerged percent", fieldType = FieldType.Readout, unit = "%" },
+            new() { name = "Displaced", fieldType = FieldType.Readout, unit = "L" }
         };
 
         int id = api.AddBody((BodyShape3D)fields[Shape].selected, fields[Volume].value / 1000, fields[Mass].value);
@@ -123,7 +126,7 @@ public class WindowManager : MonoBehaviour
         };
     }
 
-    /// <summary>Shows how submerged each object is. A hidden reading isn't calculated</summary>
+    /// <summary>Shows how submerged each object is and how much fluid it displaces. A hidden reading isn't calculated</summary>
     private void UpdateSubmerged()
     {
         foreach ((Window window, int body) in objectWindows)
@@ -134,6 +137,10 @@ public class WindowManager : MonoBehaviour
             Field submerged = window.fields[ObjectSubmerged];
             submerged.value = api.GetSubmergedPercent(body);
             window.SetField(ObjectSubmerged, submerged);
+
+            Field displaced = window.fields[ObjectDisplaced];
+            displaced.value = submerged.value / 100 * window.fields[ObjectVolume].value;
+            window.SetField(ObjectDisplaced, displaced);
         }
     }
 
@@ -273,45 +280,50 @@ public class WindowManager : MonoBehaviour
         }
     }
 
-    /// <summary>Right mouse drags a scale around</summary>
-    private void DragScale()
+    /// <summary>Right mouse drags a scale or object around, the scroll wheel moves it nearer or further</summary>
+    private void DragBody()
     {
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
 
         if (Input.GetMouseButtonDown(1) && !EventSystem.current.IsPointerOverGameObject())
         {
             float nearest = float.PositiveInfinity;
-            for (int scale = 0; scale < scaleWindows.Length; scale++)
+            IEnumerable<int> scales = Enumerable.Range(0, scaleWindows.Length).Where(scale => scaleWindows[scale]).Select(scale => api.GetScaleBodyId(scale));
+            foreach (int body in scales.Concat(objectWindows.Select(open => open.body)))
             {
-                if (scaleWindows[scale] && api.GetScaleBounds(scale).IntersectRay(ray, out float distance) && distance < nearest)
+                if (api.GetBodyBounds(body).IntersectRay(ray, out float distance) && distance < nearest)
                 {
                     nearest = distance;
-                    draggedScale = scale;
+                    draggedBody = body;
                 }
             }
 
-            if (draggedScale >= 0)
+            if (draggedBody >= 0)
             {
                 Vector3 grabbed = ray.GetPoint(nearest);
                 dragPlane = new Plane(-Camera.main.transform.forward, grabbed);
-                dragOffset = api.GetScalePosition(draggedScale) - grabbed;
-                api.SetDraggingScale(true);
+                dragOffset = api.GetBodyPosition(draggedBody) - grabbed;
             }
         }
 
-        if (draggedScale < 0)
+        if (draggedBody < 0)
             return;
 
-        // Closing the window removes the scale mid-drag
-        if (!Input.GetMouseButton(1) || !scaleWindows[draggedScale])
+        // Closing the window removes the body mid-drag
+        if (!Input.GetMouseButton(1) || !api.HasBody(draggedBody))
         {
-            draggedScale = -1;
-            api.SetDraggingScale(false);
+            api.ReleaseBody(draggedBody);
+            draggedBody = -1;
+            return;
         }
-        else if (dragPlane.Raycast(ray, out float enter))
-        {
-            api.MoveScale(draggedScale, ray.GetPoint(enter) + dragOffset);
-        }
+
+        // Scrolling up moves it away. Measured from the body, so scrolling into a wall doesn't build up
+        float scroll = Input.mouseScrollDelta.y;
+        if (scroll != 0)
+            dragPlane = new Plane(dragPlane.normal, api.GetBodyPosition(draggedBody) - dragOffset - scroll * dragScrollStep * dragPlane.normal);
+
+        if (dragPlane.Raycast(ray, out float enter))
+            api.MoveBody(draggedBody, ray.GetPoint(enter) + dragOffset);
     }
 
     /// <summary>Opens a window with these fields</summary>

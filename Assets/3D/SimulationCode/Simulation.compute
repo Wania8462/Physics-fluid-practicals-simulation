@@ -7,7 +7,6 @@
 #pragma kernel ApplyViscosity
 #pragma kernel ResolveBoundaries
 #pragma kernel AdvancePredictedPositions
-#pragma kernel AttractToMouse
 #pragma kernel CalculateVelocity
 #pragma kernel ClearGrid
 #pragma kernel CountParticles
@@ -25,7 +24,6 @@
 #pragma kernel BodyAdvancePredictedStates
 #pragma kernel SumCouplingForces
 #pragma kernel ApplyCouplingForces
-#pragma kernel AttractBodiesToMouse
 #pragma kernel SumContacts
 #pragma kernel ApplyContacts
 #pragma kernel BodyCalculateVelocity
@@ -80,7 +78,8 @@ RWStructuredBuffer<float4> BodyForces;
 RWStructuredBuffer<float4> SmoothedBodyForces;
 
 RWStructuredBuffer<float4> BodyScaleForces;
-RWStructuredBuffer<float4> BodySubmergedSlots;
+RWStructuredBuffer<float4> BodySubmergedUp;
+RWStructuredBuffer<uint> BoundaryWet;
 
 // Read-only copies of the buffers above. A kernel can only bind 8 read-write buffers
 StructuredBuffer<float4> PositionsRO;
@@ -100,8 +99,6 @@ const float interactionRadius;
 const float interactionRadiusSq;
 
 const float gravity;
-const float mouseAttractiveness;
-const float mouseRadius;
 
 // Position Based Fluids (PBF) solver settings
 const float particleVolume;
@@ -120,7 +117,6 @@ const float lowViscosity;
 const float collisionDamp;
 const float4 realHalfBoundSize;
 
-const float4 mousePosition;
 const float dt;
 
 const uint numCells;
@@ -390,19 +386,6 @@ void AdvancePredictedPositions (uint3 id : SV_DispatchThreadID)
 
     PrevPositions[id.x] = Positions[id.x];
     Positions[id.x] += dt * Velocities[id.x];
-}
-
-// Left mouse pulls fluid towards the cursor
-[numthreads(64,1,1)]
-void AttractToMouse (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= numParticles) return;
-
-    float mag = Distance(Positions[id.x], mousePosition);
-    if (mag > mouseRadius) return;
-
-    float4 r = UnitVector(Positions[id.x], mousePosition, mag);
-    Positions[id.x] += dt * mouseAttractiveness * r;
 }
 
 // Velocity from how far each particle moved this step

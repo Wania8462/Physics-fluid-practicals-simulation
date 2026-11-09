@@ -85,10 +85,8 @@ flowchart TD
         RBD --> CPL["SumCouplingForces → ApplyCouplingForces → PlaceBoundaryParticles*"]
     end
 
-    subgraph BOD["5. Mouse and bodies"]
-        ATM["AttractToMouse (left mouse)"] --> ABM["AttractBodiesToMouse* (right mouse)"]
-        ABM --> CON["SumContacts → ApplyContacts*"]
-        CON --> BCV["BodyCalculateVelocity → PlaceBoundaryParticles → ResolveBodyCollisions*"]
+    subgraph BOD["5. Bodies"]
+        CON["SumContacts → ApplyContacts*"] --> BCV["BodyCalculateVelocity → PlaceBoundaryParticles → ResolveBodyCollisions*"]
         BCV --> SBF["SmoothBodyForces*: for the arrows"]
     end
 
@@ -100,7 +98,7 @@ flowchart TD
     PBP1 --> BG
     BBG --> CL
     CPL -- "more iterations" --> CL
-    CPL -- "done" --> ATM
+    CPL -- "done" --> CON
     SBF --> RB2
 ```
 
@@ -216,13 +214,13 @@ flowchart TD
 
 | Window | Fields | Does |
 |---|---|---|
-| **New object** | Mass (kg), Volume (L), Density (material dropdown), Shape, Measurements foldout holding Submerged percent (readout, %) | Spawns a body as soon as it opens. Mass always follows from material × volume: editing Mass changes Volume to match (clamped), and editing Volume or the material changes Mass. Calls `SetBodyMass`, plus `SetBodyShape` when the size or shape changed. Closing removes the body. Renamable and groupable |
+| **New object** | Mass (kg), Volume (L), Density (material dropdown), Shape, Measurements foldout holding Submerged percent (readout, %) and Displaced (readout, L) | Spawns a body as soon as it opens. Mass always follows from material × volume: editing Mass changes Volume to match (clamped), and editing Volume or the material changes Mass. Calls `SetBodyMass`, plus `SetBodyShape` when the size or shape changed. Closing removes the body. Renamable and groupable |
 | **Fluid properties** | Density (kg/m³), Viscosity (mPa·s) | `SetDensity`, `SetViscosity` |
 | **Gravity properties** | Gravity (m/s²) | `SetGravity` |
 | **Visualisation** | A toggle per `BodyForce`, plus Values | `RenderAPI.DrawForce` / `DrawForceValues`. *Resultant* and the individual forces turn each other off |
 | **Scale N** | Weight (readout, N), Show in world | Places a scale (up to `MaxScales`, the button does nothing past that). While the readout is visible, `UpdateScales` writes the reading to it and to the text on the scale each frame. Minimised, both keep the last value. Closing removes the scale |
 
-**Moving scales**: right-click a scale in the world and drag. It slides on a plane facing the camera. While a scale is being dragged, `SetDraggingScale(true)` stops right mouse from also pulling the bodies.
+**Moving scales and objects**: right-click one in the world and drag. It slides on a plane facing the camera. The scroll wheel moves that plane away from or towards the camera, `dragScrollStep` units per notch. A dragged object is held with its rotation kept, except that a cube pushed into a wall turns towards lying flat on it at `wallAlignSpeed`. On release it keeps the velocity it was dragged at, smoothed over `throwSmoothingTime` and capped at `maxThrowSpeed`, so it can be thrown. Scales stay where they're dropped.
 
 **Settings card**: `OnSettingsClick` shows or hides it and pauses the simulation while it's open.
 
@@ -232,8 +230,7 @@ flowchart TD
 |---|---|---|
 | Mouse, WASD, Q/E, Shift | Look, move, down/up, faster | `CameraController` |
 | Esc | Toggle camera mode (cursor locked) / UI mode (cursor free). Clicking empty space in UI mode goes back to camera mode | `CameraController` |
-| Left mouse (held) | Pull fluid towards the cursor | `SimulationManager` |
-| Right mouse (held) | Pull bodies towards the cursor, or drag a scale | `SimulationManager`, `WindowManager` |
+| Right mouse (held) | Drag a scale or object. Scroll while dragging to move it further (up) or closer (down) | `WindowManager` |
 | Space / → / PgDn | Pause / step once / step 10× | `SimulationManager` |
 | R | Rebuild the simulation | `SimulationManager` |
 
@@ -446,7 +443,7 @@ $$
 
 ### Submerged percent
 
-`MeasureSubmergedBody` runs once per body whose readout is visible and counts the surface particles with fluid within `wetDistance` particle spacings. `RigidBodies3D.SubmergedFraction` takes that count as the number of surface particles below the waterline, which gives the waterline's height, then works out the sphere's or cube's volume below it. It looks at the geometry only, so it doesn't depend on the buoyancy force. It assumes one flat waterline per body.
+`MeasureSubmergedBody` runs once per body whose readout is visible and marks the surface particles with fluid within `wetDistance` particle spacings. `RigidBodies3D.SubmergedFraction` picks the waterline height that the most particles agree with (wet below, dry above), so fluid resting on top of a body doesn't raise it, then works out the sphere's or cube's volume below it. It looks at the geometry only, so it doesn't depend on the buoyancy force. It assumes one flat waterline per body.
 
 ### Units ([`SimulationAPI`](../Assets/3D/SimulationCode/SimulationAPI.cs))
 
@@ -478,7 +475,6 @@ These were picked by eye to look like water on Earth, not measured.
 | `boundaryFriction` | Fluid drag at body surfaces. ≤ 0 lets fluid tunnel |
 | `bodyFriction` | Coulomb μ between bodies, and against walls and scales |
 | `collisionDamping` | Inset distance after a wall clamp |
-| `mouseAttractiveness`, `mouseRadius` | Strength and reach of the mouse pull |
 
 ### Known approximations
 
