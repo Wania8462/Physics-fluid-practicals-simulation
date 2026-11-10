@@ -21,6 +21,7 @@ uint gridWidth;
 uint gridHeight;
 float2 gridOrigin;
 float2 cellSize;
+int2 edgeCells;  // Cells next to each wall whose heights are replaced by the nearest cell inside
 
 float particleHeight;  // Height one particle adds to a column
 float temporalBlend;
@@ -48,6 +49,10 @@ void ClearCounts (uint3 id : SV_DispatchThreadID)
 
     Counts[id.x] = 0;
 }
+
+// Keeps a column index out of the sparse water next to the walls
+int InteriorX(int x) { return clamp(x, edgeCells.x, (int)gridWidth - 1 - edgeCells.x); }
+int InteriorY(int y) { return clamp(y, edgeCells.y, (int)gridHeight - 1 - edgeCells.y); }
 
 // Shares each particle between the four nearest columns, so counts change smoothly as it moves
 [numthreads(64,1,1)]
@@ -87,7 +92,7 @@ void BlurX (uint3 id : SV_DispatchThreadID)
     for (int x = -blurRadiusX; x <= blurRadiusX; x++)
     {
         float weight = exp(x * x * blurFalloff.x);
-        sum += Heights[uint2(clamp((int)id.x + x, 0, (int)gridWidth - 1), id.y)] * weight;
+        sum += Heights[uint2(InteriorX((int)id.x + x), id.y)] * weight;
         weightSum += weight;
     }
 
@@ -104,7 +109,7 @@ void BlurY (uint3 id : SV_DispatchThreadID)
     for (int y = -blurRadiusY; y <= blurRadiusY; y++)
     {
         float weight = exp(y * y * blurFalloff.y);
-        sum += BlurTemp[uint2(id.x, clamp((int)id.y + y, 0, (int)gridHeight - 1))] * weight;
+        sum += BlurTemp[uint2(id.x, InteriorY((int)id.y + y))] * weight;
         weightSum += weight;
     }
 

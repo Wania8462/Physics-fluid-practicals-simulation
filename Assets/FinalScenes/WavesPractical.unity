@@ -5067,8 +5067,10 @@ MonoBehaviour:
   screenDistance: 500
   blurRadius: 7
   smoothingTime: 0.1
-  minFocus: 0
-  planeBrightness: 0.2
+  minFocus: 0.2
+  planeBrightness: 0.3
+  cellsPerSpacing: 2
+  edgeMargin: 2
 --- !u!1 &1018641516
 GameObject:
   m_ObjectHideFlags: 0
