@@ -15,14 +15,10 @@ public class WaveProjectionRenderer : MonoBehaviour
     [SerializeField] private float blurRadius = 9;
     [Tooltip("Seconds the water height is averaged over, which removes particle jitter. 0 turns it off")]
     [SerializeField] private float smoothingTime = 0.3f;
-    [Tooltip("Limits how bright focused light gets: the brightest band is 1 / this times the plain plane. Kept above 0.05, since 0 lets focused spots reach infinity")]
+    [Tooltip("Limits how bright focused light gets: the brightest band is 1 / this times the plain plane")]
     [SerializeField] private float minFocus = 0.25f;
-    [Tooltip("Brightness of the plane under still water, from 0 to 1. Brighter bands roll off towards white instead of clipping")]
-    [SerializeField, Range(0.01f, 0.99f)] private float planeBrightness = 0.4f;
-    [Tooltip("Height map cells per particle spacing. More gives smoother bands")]
-    [SerializeField, Min(1)] private int cellsPerSpacing = 2;
-    [Tooltip("Width next to the walls, in particle spacings, where the height map ignores the water. Particles are sparse there, which would show as bright edges")]
-    [SerializeField, Min(0)] private float edgeMargin = 2;
+    [Tooltip("Brightness of the plane under still water. Below 1 so bright bands don't clip to white")]
+    [SerializeField] private float planeBrightness = 0.6f;
 
     private SimulationManager sim;
     private Mesh mesh;
@@ -47,9 +43,8 @@ public class WaveProjectionRenderer : MonoBehaviour
         ReleaseResources();
 
         Tank tank = sim.Tank;
-        float cellTarget = sim.Spacing / cellsPerSpacing;
-        gridWidth = Mathf.Max(1, Mathf.RoundToInt(tank.size.x / cellTarget));
-        gridHeight = Mathf.Max(1, Mathf.RoundToInt(tank.size.z / cellTarget));
+        gridWidth = Mathf.Max(1, Mathf.RoundToInt(tank.size.x / sim.Spacing));
+        gridHeight = Mathf.Max(1, Mathf.RoundToInt(tank.size.z / sim.Spacing));
         cellSize = new Vector2(tank.size.x / gridWidth, tank.size.z / gridHeight);
 
         counts = ComputeHelper.CreateBuffer<uint>(gridWidth * gridHeight);
@@ -99,8 +94,7 @@ public class WaveProjectionRenderer : MonoBehaviour
         foreach (int kernel in new[] { resolveKernel, blurXKernel, blurYKernel, lightKernel })
             compute.DispatchThreads(kernel, gridWidth, gridHeight);
 
-        // Still water maps to planeBrightness, brighter light rolls off towards white
-        material.SetFloat("exposure", -Mathf.Log(1 - planeBrightness));
+        material.SetFloat("planeBrightness", planeBrightness);
         Graphics.RenderMesh(renderParams, mesh, 0, planeTransform);
 
         resetHistory = false;
@@ -123,17 +117,13 @@ public class WaveProjectionRenderer : MonoBehaviour
         compute.SetInt("gridHeight", gridHeight);
         compute.SetVector("gridOrigin", new Vector2(-tank.halfSize.x, -tank.halfSize.z));
         compute.SetVector("cellSize", cellSize);
-        float margin = edgeMargin * sim.Spacing;
-        compute.SetInts("edgeCells",
-            Mathf.Min(Mathf.CeilToInt(margin / cellSize.x), (gridWidth - 1) / 2),
-            Mathf.Min(Mathf.CeilToInt(margin / cellSize.y), (gridHeight - 1) / 2));
         compute.SetFloat("particleHeight", FluidMath3D.HeightPerParticle(sim.Spacing, cellSize.x * cellSize.y));
         compute.SetFloat("temporalBlend", resetHistory ? 1 : FluidMath3D.SmoothingBlend(Time.deltaTime, smoothingTime));
         compute.SetInt("blurRadiusX", Mathf.CeilToInt(3 * sigma / cellSize.x));
         compute.SetInt("blurRadiusY", Mathf.CeilToInt(3 * sigma / cellSize.y));
         compute.SetVector("blurFalloff", new Vector2(BlurFalloff(sigma, cellSize.x), BlurFalloff(sigma, cellSize.y)));
         compute.SetFloat("lensGain", screenDistance * (1 - 1 / RefractiveIndex));
-        compute.SetFloat("minFocus", Mathf.Max(minFocus, 0.05f));
+        compute.SetFloat("minFocus", minFocus);
     }
 
     /// <summary>Gaussian exponent per squared cell</summary>

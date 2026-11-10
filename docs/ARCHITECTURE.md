@@ -230,7 +230,7 @@ flowchart TD
 
 **Settings card**: `OnSettingsClick` shows or hides it and pauses the simulation while it's open.
 
-**Wave projection**: `ToggleWaveProjection` swaps everything drawn for the ripple tank view, while the simulation and windows keep running. `WaveProjectionRenderer` (optional on `RenderManager`, rendering only) builds a water height map by sharing particles between top-down grid columns (`cellsPerSpacing` per particle spacing), averages it over time, blurs it, and works out the light from its curvature: `1 / max(minFocus, 1 + screenDistance × (1 − 1/1.33) × ∇²h)`. The blur ignores the `edgeMargin` band next to the walls, where particles are sparse and the height dips, so the edges don't light up. The plane samples the light map with cubic B-spline filtering and shows `1 − exp(−exposure × light)`, with the exposure picked so still water shows `planeBrightness`, so bright bands roll off instead of clipping to white. Crests curve downwards and act as lenses, so they show as bright bands and troughs as dark ones, as in a real ripple tank. Absorption would give the opposite and be very faint.
+**Wave projection**: `ToggleWaveProjection` swaps everything drawn for the ripple tank view, while the simulation and windows keep running. `WaveProjectionRenderer` (optional on `RenderManager`, rendering only) builds a water height map by sharing particles between top-down grid columns, averages it over time, blurs it, and works out the light from its curvature: `1 / max(minFocus, 1 + screenDistance × (1 − 1/1.33) × ∇²h)`. Crests curve downwards and act as lenses, so they show as bright bands and troughs as dark ones, as in a real ripple tank. Absorption would give the opposite and be very faint.
 
 ### Controls
 
