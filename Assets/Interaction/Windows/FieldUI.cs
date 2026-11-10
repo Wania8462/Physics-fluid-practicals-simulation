@@ -8,15 +8,37 @@ using UnityEngine.UI;
 /// <summary>The UI of one window field</summary>
 public class FieldUI : MonoBehaviour
 {
-    /// <summary>Height of a separator field, in pixels</summary>
-    public const int SeparatorHeight = 16;
     private const float SeparatorMargin = 16, SeparatorThickness = 2;
+    private const int SliderHeight = 20, PlotHeight = 152;
+    /// <summary>How tall a row is for the text in it: main text or a control, and captions</summary>
+    private const float RowPerText = 1.45f, CaptionRowPerText = 1.3f;
+    /// <summary>A unit's text size as a part of the label's, and the least it shrinks to as a part of that</summary>
+    private const float UnitTextScale = 0.8f, SmallestUnitFit = 0.5f;
+    /// <summary>How far left of its place in the prefab the unit sits, to keep it off the window's edge</summary>
+    private const float UnitNudge = 5;
 
-    /// <summary>Height of a graph field, in pixels</summary>
-    public const int GraphHeight = 230;
+    /// <summary>Space above, below and between a field's rows, in pixels</summary>
+    private static int Pad => Mathf.RoundToInt(UITheme.Current.spacing);
+    /// <summary>Height of a row of main text or of a control, in pixels</summary>
+    private static int Row => Mathf.RoundToInt(RowPerText * UITheme.Current.sizeMain);
+    /// <summary>Height of a row of captions, in pixels</summary>
+    private static int CaptionRow => Mathf.RoundToInt(CaptionRowPerText * UITheme.Current.sizeCaption);
     /// <summary>Room above the plot for the field's name and below it for the time axis, in pixels</summary>
-    private const float GraphTop = 48, GraphBottom = 30;
-    private const float GraphTextScale = 0.6f;
+    private static int GraphTop => Pad + Row;
+    private static int GraphBottom => CaptionRow + Pad;
+
+    /// <summary>Height of a field's UI in pixels, which follows the theme's text sizes and spacing</summary>
+    public static int HeightOf(FieldType type)
+    {
+        return type switch
+        {
+            FieldType.Numeric => 3 * Pad + Row + SliderHeight + CaptionRow,
+            FieldType.Dropdown => 2 * Row + 2 * Pad + Pad / 2,
+            FieldType.Separator => 2 * Pad,
+            FieldType.Graph => GraphTop + PlotHeight + GraphBottom,
+            _ => Row + 2 * Pad,
+        };
+    }
 
     [SerializeField] private TMP_Text label;
     [SerializeField] private TMP_Text unit;
@@ -32,7 +54,7 @@ public class FieldUI : MonoBehaviour
     private Image separator;
     private Button foldoutButton;
     private LineGraph graph;
-    private TMP_Text graphHigh, graphLow, graphOldest;
+    private TMP_Text graphHigh, graphLow, graphOldest, graphNewest;
     private GameObject buttonRow;
     private TMP_Text[] buttonTexts;
 
@@ -45,6 +67,77 @@ public class FieldUI : MonoBehaviour
         input.onEndEdit.AddListener(OnInputEntered);
         dropdown.onValueChanged.AddListener(OnDropdownChanged);
         toggle.onValueChanged.AddListener(OnToggleChanged);
+
+        // The styler sizes its sprites from the laid-out controls
+        Layout();
+        UIStyler.Apply(transform);
+    }
+
+    /// <summary>Stacks the controls in rows whose heights follow the theme. Where they sit across the field stays as in the prefab</summary>
+    private void Layout()
+    {
+        int secondRow = Pad + Row + Pad;
+        int captions = secondRow + SliderHeight + Pad / 2;
+
+        Place(label.rectTransform, Pad, Row);
+        Place((RectTransform)input.transform, Pad, Row);
+        Place(unit.rectTransform, Pad, Row);
+        unit.rectTransform.anchoredPosition -= new Vector2(UnitNudge, 0);
+        Place((RectTransform)slider.transform, secondRow, SliderHeight);
+        Place(minText.rectTransform, captions, CaptionRow);
+        Place(maxText.rectTransform, captions, CaptionRow);
+        Place((RectTransform)dropdown.transform, Pad + Row + Pad / 2, Row);
+
+        // The toggle stays square with its right edge where it was
+        RectTransform box = (RectTransform)toggle.transform;
+        float right = box.anchoredPosition.x + box.sizeDelta.x;
+        box.sizeDelta = new Vector2(Row, Row);
+        box.anchoredPosition = new Vector2(right - Row, -Pad);
+    }
+
+    /// <param name="top">How far below the field's top edge, in pixels</param>
+    private static void Place(RectTransform rect, float top, float height)
+    {
+        rect.anchoredPosition = new Vector2(rect.anchoredPosition.x, -top);
+        rect.sizeDelta = new Vector2(rect.sizeDelta.x, height);
+    }
+
+    /// <summary>Gives the field's texts and lines the theme's sizes and colours. Its controls are styled by UIStyler</summary>
+    public void ApplyTheme()
+    {
+        foreach (TMP_Text text in GetComponentsInChildren<TMP_Text>(true))
+            text.fontSize = UITheme.Current.sizeMain;
+
+        foreach (TMP_Text caption in new[] { minText, maxText, graphHigh, graphLow, graphOldest, graphNewest })
+        {
+            if (caption)
+                MakeCaption(caption);
+        }
+
+        if (separator)
+            separator.color = UITheme.Colors.border;
+        if (graph)
+            graph.frameColor = UITheme.Colors.border;
+        SizeUnit();
+    }
+
+    /// <summary>
+    /// The unit beside a text box is a bit smaller than the label. A readout's value is as large as its name.
+    /// Either shrinks further when it wouldn't fit on one line
+    /// </summary>
+    private void SizeUnit()
+    {
+        float size = UITheme.Current.sizeMain * (field.fieldType == FieldType.Readout ? 1 : UnitTextScale);
+        unit.textWrappingMode = TextWrappingModes.NoWrap;
+        unit.enableAutoSizing = true;
+        unit.fontSizeMax = size;
+        unit.fontSizeMin = size * SmallestUnitFit;
+    }
+
+    private static void MakeCaption(TMP_Text text)
+    {
+        text.fontSize = UITheme.Current.sizeCaption;
+        text.color = UITheme.Colors.textSecondary;
     }
 
     /// <summary>Shows a field. index is its position in the window</summary>
@@ -52,6 +145,7 @@ public class FieldUI : MonoBehaviour
     {
         this.field = field;
         this.index = index;
+        SizeUnit();
         label.text = LabelText();
 
         bool isSeparator = field.fieldType == FieldType.Separator;
@@ -127,12 +221,12 @@ public class FieldUI : MonoBehaviour
         }
     }
 
-    /// <summary>A thin line across the middle of the separator, in the label's colour</summary>
+    /// <summary>A thin line across the middle of the separator</summary>
     private Image CreateSeparator()
     {
         Image line = new GameObject("Separator", typeof(RectTransform), typeof(Image)).GetComponent<Image>();
         line.raycastTarget = false;
-        line.color = new Color(label.color.r, label.color.g, label.color.b, 0.5f);
+        line.color = UITheme.Colors.border;
 
         RectTransform rect = line.rectTransform;
         rect.SetParent(transform, false);
@@ -140,25 +234,24 @@ public class FieldUI : MonoBehaviour
         rect.anchorMax = new Vector2(1, 1);
         rect.pivot = new Vector2(0.5f, 0.5f);
         rect.sizeDelta = new Vector2(-2 * SeparatorMargin, SeparatorThickness);
-        rect.anchoredPosition = new Vector2(0, -SeparatorHeight / 2f);
+        rect.anchoredPosition = new Vector2(0, -HeightOf(FieldType.Separator) / 2f);
         return line;
     }
 
-    /// <summary>One button per option, sharing a row equally and styled like the text input</summary>
+    /// <summary>One button per option, sharing a row equally</summary>
     private void CreateButtons()
     {
-        const float RowHeight = 40, RowTop = 8, Gap = 8;
+        const float Gap = 8;
 
         RectTransform row = new GameObject("Buttons", typeof(RectTransform)).GetComponent<RectTransform>();
         row.SetParent(transform, false);
         row.anchorMin = new Vector2(0, 1);
         row.anchorMax = new Vector2(1, 1);
         row.pivot = new Vector2(0.5f, 1);
-        row.sizeDelta = new Vector2(-2 * SeparatorMargin, RowHeight);
-        row.anchoredPosition = new Vector2(0, -RowTop);
+        row.sizeDelta = new Vector2(-2 * SeparatorMargin, Row);
+        row.anchoredPosition = new Vector2(0, -Pad);
         buttonRow = row.gameObject;
 
-        Image inputImage = input.GetComponent<Image>();
         int count = field.options.Length;
         buttonTexts = new TMP_Text[count];
 
@@ -166,12 +259,7 @@ public class FieldUI : MonoBehaviour
         {
             Button button = new GameObject("Button", typeof(RectTransform), typeof(Image), typeof(Button)).GetComponent<Button>();
 
-            Image image = button.GetComponent<Image>();
-            image.sprite = inputImage.sprite;
-            image.type = inputImage.type;
-            image.color = inputImage.color;
-
-            RectTransform rect = image.rectTransform;
+            RectTransform rect = (RectTransform)button.transform;
             rect.SetParent(row, false);
             rect.anchorMin = new Vector2((float)i / count, 0);
             rect.anchorMax = new Vector2((float)(i + 1) / count, 1);
@@ -200,34 +288,38 @@ public class FieldUI : MonoBehaviour
                 EventSystem.current.SetSelectedGameObject(null);
             });
         }
+
+        UIStyler.Apply(row);
     }
 
-    /// <summary>The plot and its axis labels, in the label's colour and font</summary>
+    /// <summary>The plot and its axis labels</summary>
     private void CreateGraph()
     {
         graph = new GameObject("Graph", typeof(RectTransform), typeof(LineGraph)).GetComponent<LineGraph>();
         graph.raycastTarget = false;
-        graph.frameColor = label.color;
+        graph.frameColor = UITheme.Colors.border;
 
         RectTransform rect = graph.rectTransform;
         rect.SetParent(transform, false);
         rect.anchorMin = new Vector2(0, 1);
         rect.anchorMax = new Vector2(1, 1);
         rect.pivot = new Vector2(0.5f, 1);
-        rect.sizeDelta = new Vector2(-2 * SeparatorMargin, GraphHeight - GraphTop - GraphBottom);
+        rect.sizeDelta = new Vector2(-2 * SeparatorMargin, PlotHeight);
         rect.anchoredPosition = new Vector2(0, -GraphTop);
 
-        graphHigh = CreateGraphLabel(new Vector2(0, 1), new Vector2(4, -2));
-        graphLow = CreateGraphLabel(new Vector2(0, 0), new Vector2(4, 2));
-        graphOldest = CreateGraphLabel(new Vector2(0, 0), new Vector2(0, -GraphBottom + 2));
-        CreateGraphLabel(new Vector2(1, 0), new Vector2(0, -GraphBottom + 2)).text = "now";
+        const float Inset = 4, Gap = 2;
+        graphHigh = CreateGraphLabel(new Vector2(0, 1), new Vector2(Inset, -Gap));
+        graphLow = CreateGraphLabel(new Vector2(0, 0), new Vector2(Inset, Gap));
+        graphOldest = CreateGraphLabel(new Vector2(0, 0), new Vector2(0, -CaptionRow - Gap));
+        graphNewest = CreateGraphLabel(new Vector2(1, 0), new Vector2(0, -CaptionRow - Gap));
+        graphNewest.text = "now";
     }
 
     /// <summary>A small text at a corner of the plot, aligned towards that corner's side</summary>
     private TMP_Text CreateGraphLabel(Vector2 corner, Vector2 offset)
     {
         TMP_Text text = Instantiate(label, graph.transform);
-        text.fontSize = label.fontSize * GraphTextScale;
+        MakeCaption(text);
         text.textWrappingMode = TextWrappingModes.NoWrap;
         text.horizontalAlignment = corner.x == 0 ? HorizontalAlignmentOptions.Left : HorizontalAlignmentOptions.Right;
         text.raycastTarget = false;
@@ -236,7 +328,7 @@ public class FieldUI : MonoBehaviour
         rect.anchorMin = corner;
         rect.anchorMax = corner;
         rect.pivot = corner;
-        rect.sizeDelta = new Vector2(150, 26);
+        rect.sizeDelta = new Vector2(150, CaptionRow);
         rect.anchoredPosition = offset;
         return text;
     }
@@ -282,7 +374,6 @@ public class FieldUI : MonoBehaviour
         labelRect.sizeDelta = new Vector2(labelWidth, labelRect.sizeDelta.y);
 
         float left = margin + labelWidth + margin;
-        unit.fontSize = label.fontSize;
         unit.textWrappingMode = TextWrappingModes.NoWrap;
         unit.horizontalAlignment = HorizontalAlignmentOptions.Right;
         unitRect.anchoredPosition = new Vector2(left, unitRect.anchoredPosition.y);

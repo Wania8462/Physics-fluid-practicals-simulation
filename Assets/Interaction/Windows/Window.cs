@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using TMPro;
@@ -53,28 +54,24 @@ public struct Field
     /// <summary>Height of the field's UI, in pixels</summary>
     public readonly int GetHeight()
     {
-        return fieldType switch
-        {
-            FieldType.Numeric => 110,
-            FieldType.Dropdown => 100,
-            FieldType.Toggle => 56,
-            FieldType.Readout => 56,
-            FieldType.Separator => FieldUI.SeparatorHeight,
-            FieldType.Foldout => 56,
-            FieldType.Graph => FieldUI.GraphHeight,
-            FieldType.Buttons => 56,
-            _ => throw new Exception($"There is no height for {fieldType}"),
-        };
+        return FieldUI.HeightOf(fieldType);
     }
 }
 
 /// <summary>Draggable window of fields. Dropping one window on another groups them</summary>
 public class Window : MonoBehaviour
 {
-    private const float HoverGrowth = 1.05f;
+    /// <summary>How far a group's frame reaches past its members on each side, in pixels</summary>
+    private const float GroupPadding = 10;
+    /// <summary>The size a window opens from and closes to, and the size from which it's fully opaque. 1 is its own size</summary>
+    private const float Collapsed = 0.05f, Solid = 0.6f;
     private const float DoubleClickTime = 0.3f;
     /// <summary>Empty space under a window's contents, in pixels</summary>
     private const float BottomPadding = 10;
+    /// <summary>How dark a title bar button gets under the mouse and when pressed</summary>
+    private const float ButtonHover = 0.15f, ButtonPress = 0.3f;
+    /// <summary>The most of the title bar's height the title's text takes</summary>
+    private const float TitleFill = 0.85f;
 
     [SerializeField] private RectTransform top;
     [SerializeField] private RectTransform background;
@@ -103,6 +100,10 @@ public class Window : MonoBehaviour
     private bool dragging;
     private Window hovered;
     private bool highlighted;
+    /// <summary>How much bigger than its own size the window is drawn right now</summary>
+    private float growth = 1;
+    private Coroutine growing;
+    private CanvasGroup fade;
     private float lastTopBarClick;
 
     /// <summary>The window's title</summary>
@@ -116,6 +117,76 @@ public class Window : MonoBehaviour
 
     /// <summary>Only groupable windows can be dropped onto each other</summary>
     public bool Groupable { get; set; }
+
+    private void Awake()
+    {
+        // Invisible until Start, by when the fields have been built and styled at the window's real size
+        fade = gameObject.AddComponent<CanvasGroup>();
+        fade.alpha = 0;
+        UIStyler.Apply(transform);
+    }
+
+    private void Start()
+    {
+        SetGrowth(Collapsed);
+        growing = StartCoroutine(GrowTo(1, UITheme.Current.fadeTime));
+    }
+
+    /// <summary>Gives the title bar and the body the theme's shapes and colours. The fields style themselves</summary>
+    public void ApplyTheme()
+    {
+        UITheme theme = UITheme.Current;
+        Palette colors = UITheme.Colors;
+
+        RoundTitleBar();
+        top.GetComponent<Image>().color = colors.titleBar;
+
+        Image body = background.GetComponent<Image>();
+        UIStyler.Round(body, theme.radius, Corners.Bottom);
+        body.color = IsGroup ? colors.border : colors.panel;
+
+        title.textComponent.color = colors.onAccent;
+        title.textComponent.fontSize = Mathf.Min(theme.sizeMain, ((RectTransform)title.transform).rect.height * TitleFill);
+        title.caretColor = colors.onAccent;
+
+        // Minimise and close are clear until the mouse is over them
+        foreach (Button button in GetComponentsInChildren<Button>(true))
+        {
+            if (button.transform.parent != transform)
+                continue;
+
+            UIStyler.Tint(button, Color.clear, new Color(0, 0, 0, ButtonHover), new Color(0, 0, 0, ButtonPress), Color.clear);
+            foreach (TMP_Text text in button.GetComponentsInChildren<TMP_Text>(true))
+                CentreSymbol(text, colors.onAccent);
+        }
+    }
+
+    /// <summary>
+    /// Puts a title bar button's symbol in the middle of the button, as large as the title.
+    /// The minimise underscore becomes a dash, which sits at mid height in any font
+    /// </summary>
+    private void CentreSymbol(TMP_Text symbol, Color color)
+    {
+        if (symbol.text == "_")
+            symbol.text = "–";
+
+        symbol.color = color;
+        symbol.fontSize = title.textComponent.fontSize;
+        symbol.horizontalAlignment = HorizontalAlignmentOptions.Center;
+        symbol.verticalAlignment = VerticalAlignmentOptions.Middle;
+
+        RectTransform rect = symbol.rectTransform;
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+    }
+
+    /// <summary>The title bar is round on top, and all round when the body under it is hidden</summary>
+    private void RoundTitleBar()
+    {
+        bool open = background.gameObject.activeSelf;
+        UIStyler.Round(top.GetComponent<Image>(), UITheme.Current.radius, open ? Corners.Top : Corners.All);
+    }
 
     private void Update()
     {
@@ -173,11 +244,22 @@ public class Window : MonoBehaviour
         if (IsGroup)
             LayoutMembers();
 
+        // What the window owns is cleaned up right away, only the look of it lingers while it shrinks
         if (closing)
         {
             RaiseClosed();
-            Destroy(gameObject);
+            enabled = false;
+            fade.blocksRaycasts = false;
+            if (growing != null)
+                StopCoroutine(growing);
+            StartCoroutine(ShrinkAway());
         }
+    }
+
+    private IEnumerator ShrinkAway()
+    {
+        yield return GrowTo(Collapsed, UITheme.Current.fadeTime);
+        Destroy(gameObject);
     }
 
     /// <summary>The window on top at a point. A point over a grouped window gives its group</summary>
@@ -185,7 +267,8 @@ public class Window : MonoBehaviour
     {
         for (int i = canvas.childCount - 1; i >= 0; i--)
         {
-            if (canvas.GetChild(i).TryGetComponent(out Window window) && window != except && window.Bounds().Contains(point))
+            // A window that's shrinking away is switched off
+            if (canvas.GetChild(i).TryGetComponent(out Window window) && window.enabled && window != except && window.Bounds().Contains(point))
                 return window;
         }
         return null;
@@ -207,7 +290,50 @@ public class Window : MonoBehaviour
             return;
 
         highlighted = on;
-        transform.localScale *= on ? HoverGrowth : 1 / HoverGrowth;
+        if (growing != null)
+            StopCoroutine(growing);
+        growing = StartCoroutine(GrowTo(on ? UITheme.Current.growth : 1, UITheme.Current.growTime));
+    }
+
+    /// <summary>Eases the window to a size, fast at first and settling gently</summary>
+    /// <param name="target">1 is the window's own size</param>
+    /// <param name="seconds">How long it takes</param>
+    private IEnumerator GrowTo(float target, float seconds)
+    {
+        float from = growth;
+
+        for (float progress = 0; progress < 1; progress += Time.unscaledDeltaTime / seconds)
+        {
+            float left = 1 - progress;
+            SetGrowth(Mathf.Lerp(from, target, 1 - left * left * left));
+            yield return null;
+        }
+
+        SetGrowth(target);
+    }
+
+    /// <summary>Scales the window from whatever it is now, so a move into or out of a group in mid-growth doesn't upset it</summary>
+    private void SetGrowth(float value)
+    {
+        transform.localScale *= value / growth;
+        growth = value;
+        fade.alpha = Mathf.InverseLerp(Collapsed, Solid, value);
+    }
+
+    /// <summary>Makes the title bar and body wider than the members, so the group shows as a frame around them</summary>
+    private void BecomeGroup()
+    {
+        IsGroup = true;
+        top.sizeDelta += new Vector2(2 * GroupPadding, 0);
+        background.sizeDelta += new Vector2(2 * GroupPadding, 0);
+        background.GetComponent<Image>().color = UITheme.Colors.border;
+
+        // Minimise and close stay against the title bar's right end
+        foreach (Button button in GetComponentsInChildren<Button>(true))
+        {
+            if (button.transform.parent == transform)
+                ((RectTransform)button.transform).anchoredPosition += new Vector2(GroupPadding * top.localScale.x, 0);
+        }
     }
 
     /// <summary>Adds a window to this group, placed by the mouse position</summary>
@@ -215,7 +341,8 @@ public class Window : MonoBehaviour
     {
         int index = background.Cast<Transform>().Count(member => member.position.y > Input.mousePosition.y);
 
-        IsGroup = true;
+        if (!IsGroup)
+            BecomeGroup();
         window.transform.SetParent(background, true);
         window.transform.SetSiblingIndex(index);
         background.gameObject.SetActive(true);
@@ -240,7 +367,7 @@ public class Window : MonoBehaviour
 
         Vector3[] corners = new Vector3[4];
         background.GetWorldCorners(corners);
-        float y = corners[1].y;
+        float y = corners[1].y - GroupPadding * background.lossyScale.y;
 
         foreach (Transform member in background)
         {
@@ -351,6 +478,7 @@ public class Window : MonoBehaviour
     public void ToggleMinimize()
     {
         background.gameObject.SetActive(!background.gameObject.activeSelf);
+        RoundTitleBar();
     }
 
     /// <summary>Starts dragging the window. A double click renames it</summary>
