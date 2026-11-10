@@ -1,7 +1,7 @@
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 /// <summary>Measures how deep the fluid is under each depth meter, and remembers it. Everything is in sim units</summary>
 public class DepthMeters
@@ -99,19 +99,16 @@ public class DepthMeters
         moved = false;
         readbackPending = true;
         float sampleTime = time;
-        AsyncGPUReadback.Request(manager.Buffers["Positions"], request => FinishSample(request, due, sampleTime));
+        manager.Buffers["Positions"].ReadAsync<float4>(positions => FinishSample(positions, due, sampleTime), () => readbackPending = false);
     }
 
     /// <summary>Works out each meter's depth from how much fluid is in its column</summary>
-    private void FinishSample(AsyncGPUReadbackRequest request, bool record, float sampleTime)
+    private void FinishSample(NativeArray<float4> positions, bool record, float sampleTime)
     {
         // The scene may have closed since the request
         if (!manager) return;
 
         readbackPending = false;
-        if (request.hasError) return;
-
-        var positions = request.GetData<float4>();
         float radius = ColumnHalfWidth;
         float[] sums = new float[MaxMeters];
 
@@ -124,14 +121,11 @@ public class DepthMeters
                 if (meters[m] == null) continue;
 
                 // Particles near the middle of the column count most, so readings change smoothly as they cross it
-                float distanceX = math.abs(position.x - meters[m].x);
-                float distanceZ = math.abs(position.z - meters[m].z);
-                if (distanceX < radius && distanceZ < radius)
-                    sums[m] += (1 - distanceX / radius) * (1 - distanceZ / radius);
+                sums[m] += FluidMath3D.ColumnWeight(position.xz - new float2(meters[m].x, meters[m].z), radius);
             }
         }
 
-        float heightPerWeight = math.pow(manager.Spacing, 3) / (radius * radius);
+        float heightPerWeight = FluidMath3D.HeightPerParticle(manager.Spacing, radius * radius);
         for (int m = 0; m < MaxMeters; m++)
         {
             if (meters[m] == null) continue;

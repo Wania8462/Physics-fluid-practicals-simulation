@@ -23,7 +23,6 @@ public class ParticleRenerer : MonoBehaviour
 
     private ComputeBuffer colorsBuffer;
     private GraphicsBuffer commandBuf;
-    private GraphicsBuffer.IndirectDrawIndexedArgs[] commandData;
     private RenderParams rp;
 
     private GraphicsBuffer boundaryCommandBuf;
@@ -39,9 +38,7 @@ public class ParticleRenerer : MonoBehaviour
     {
         mesh = mesh == null ? MeshGenerator.Circle(sim.particleRadius, particleQuality) : mesh;
         ComputeHelper.Release(commandBuf);
-        commandBuf = ComputeHelper.CreateCommandBuffer();
-        commandData = ComputeHelper.CreateCommandData(mesh, sim.numParticles);
-        commandBuf.SetData(commandData);
+        commandBuf = ComputeHelper.CreateDrawArgs(mesh, sim.numParticles);
         rp = ComputeHelper.CreateRenderParams(material);
 
         threadGroups = compute.GetThreadGroups(CalculateColorsKernelID, sim.numParticles);
@@ -49,7 +46,7 @@ public class ParticleRenerer : MonoBehaviour
         compute.SetInt("numParticles", sim.numParticles);
 
         ComputeHelper.Release(colorsBuffer);
-        colorsBuffer = ComputeHelper.CreateStructuredBufferWithData(GetDefaultColors(sim.numParticles));
+        colorsBuffer = ComputeHelper.CreateBuffer(GetDefaultColors(sim.numParticles));
         compute.SetBuffer(CalculateColorsKernelID, "Colors", colorsBuffer);
         compute.SetBool("solidBlue", color == ParticleColor3D.SolidBlue);
         compute.SetBool("blueToRed", color == ParticleColor3D.BlueToRed);
@@ -76,8 +73,7 @@ public class ParticleRenerer : MonoBehaviour
             return;
         }
 
-        boundaryCommandBuf = ComputeHelper.CreateCommandBuffer();
-        boundaryCommandBuf.SetData(ComputeHelper.CreateCommandData(mesh, sim.numBoundaryParticles));
+        boundaryCommandBuf = ComputeHelper.CreateDrawArgs(mesh, sim.numBoundaryParticles);
         boundaryRp = ComputeHelper.CreateRenderParams(boundaryMaterial);
         boundaryRp.matProps.SetBuffer("Positions", sim.Buffers["BoundaryPositions"]);
         drawBoundaryParticles = true;

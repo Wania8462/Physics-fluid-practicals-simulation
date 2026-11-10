@@ -1,92 +1,55 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using Unity.Collections;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
-using System.IO;
 
 /// <summary>Helpers for GPU buffers, dispatches and reading shaders</summary>
 public static class ComputeHelper
 {
-    private const int commandCount = 1;
+    private const int CommandCount = 1;
+    /// <summary>Suffix of the read-only views of a buffer in the compute shaders, e.g. PositionsRO</summary>
+    private const string ReadOnlySuffix = "RO";
 
-    private static readonly HashSet<string> bufferTypes = new()
-    {
-        "RWStructuredBuffer<", "StructuredBuffer<",
-        "RWBuffer<", "Buffer<"
-    };
+    private static readonly string[] BufferTypes = { "RWStructuredBuffer<", "StructuredBuffer<", "RWBuffer<", "Buffer<" };
 
-    private static readonly HashSet<string> textureTypes = new()
+    #region Creating
+    /// <summary>Buffer of count zeroed elements. Never empty, since Unity can't make an empty buffer</summary>
+    public static ComputeBuffer CreateBuffer<T>(int count) where T : struct
     {
-        "RWTexture2D<", "Texture2D<", "Texture3D<"
-    };
-
-    #region Factory methods
-    /// <summary>Buffer of count elements, contents undefined</summary>
-    public static ComputeBuffer CreateStructuredBuffer<T>(int count)
-    {
-        var buf = new ComputeBuffer(count, GetStride<T>());
-        return buf;
+        ComputeBuffer buffer = new(math.max(count, 1), GetStride<T>());
+        buffer.SetData(new T[buffer.count]);
+        return buffer;
     }
 
-    /// <summary>Buffer filled with data</summary>
-    public static ComputeBuffer CreateStructuredBufferWithData<T>(T[] data)
+    /// <summary>Buffer filled with data, or one zeroed element if there's none</summary>
+    public static ComputeBuffer CreateBuffer<T>(IReadOnlyList<T> data) where T : struct
     {
-        var buf = new ComputeBuffer(data.Length, GetStride<T>());
-        buf.SetData(data);
-        return buf;
+        if (data.Count == 0)
+            return CreateBuffer<T>(1);
+
+        ComputeBuffer buffer = new(data.Count, GetStride<T>());
+        buffer.SetData(data as T[] ?? data.ToArray());
+        return buffer;
     }
 
-    /// <summary>Buffer of count zeroed elements</summary>
-    public static ComputeBuffer CreateStructuredBufferWithData<T>(int count)
+    /// <summary>Arguments for drawing instances of mesh with one indirect draw</summary>
+    public static GraphicsBuffer CreateDrawArgs(Mesh mesh, int instances)
     {
-        var buf = new ComputeBuffer(count, GetStride<T>());
-        buf.SetData(new T[count]);
-        return buf;
-    }
-
-    /// <summary>Integer texture compute shaders can write to</summary>
-    public static RenderTexture CreateRenderTexture2D(int width, int height)
-    {
-        RenderTexture texture = new(width, height, depth: 0, RenderTextureFormat.RInt)
-        { enableRandomWrite = true };
-        texture.Create();
-        return texture;
-    }
-
-    /// <summary>3D integer texture compute shaders can write to</summary>
-    public static RenderTexture CreateRenderTexture3D(int width, int depth, int height)
-    {
-        RenderTexture texture = new(width, height, depth: 0, RenderTextureFormat.RInt)
+        GraphicsBuffer buffer = new(GraphicsBuffer.Target.IndirectArguments, CommandCount, GraphicsBuffer.IndirectDrawIndexedArgs.size);
+        buffer.SetData(new[]
         {
-            enableRandomWrite = true,
-            dimension = TextureDimension.Tex3D,
-            volumeDepth = depth
-        };
-        texture.Create();
-        return texture;
-    }
-
-    /// <summary>New empty texture the same size as texture. The contents are not copied</summary>
-    public static RenderTexture CopyTexture(RenderTexture texture)
-    {
-        RenderTexture result = new(texture.width, texture.height, texture.depth, RenderTextureFormat.RInt)
-        { enableRandomWrite = true };
-        result.Create();
-        return result;
-    }
-
-    /// <summary>Buffer for the arguments of one indirect draw</summary>
-    public static GraphicsBuffer CreateCommandBuffer() => new(GraphicsBuffer.Target.IndirectArguments, commandCount, GraphicsBuffer.IndirectDrawIndexedArgs.size);
-
-    /// <summary>Indirect draw arguments for numMeshes instances of mesh</summary>
-    public static GraphicsBuffer.IndirectDrawIndexedArgs[] CreateCommandData(Mesh mesh, int numMeshes)
-    {
-        GraphicsBuffer.IndirectDrawIndexedArgs[] commandData = new GraphicsBuffer.IndirectDrawIndexedArgs[commandCount];
-        commandData[0].indexCountPerInstance = mesh.GetIndexCount(0);
-        commandData[0].instanceCount = (uint)numMeshes;
-        return commandData;
+            new GraphicsBuffer.IndirectDrawIndexedArgs
+            {
+                indexCountPerInstance = mesh.GetIndexCount(0),
+                instanceCount = (uint)instances
+            }
+        });
+        return buffer;
     }
 
     /// <summary>Render params with huge bounds, so the draw is never culled</summary>
@@ -100,37 +63,76 @@ public static class ComputeHelper
     }
     #endregion
 
-    #region Release helpers
-    /// <summary>Releases the buffer if there is one</summary>
-    public static void Release(ComputeBuffer buf)
+    #region Reading and writing
+    /// <summary>Overwrites one element</summary>
+    public static void SetElement<T>(this ComputeBuffer buffer, int index, T value) where T : struct
+        => buffer.SetData(new[] { value }, 0, index, 1);
+
+    /// <summary>The whole buffer. Stalls until the GPU catches up</summary>
+    public static T[] Read<T>(this ComputeBuffer buffer) where T : struct
     {
-        if (buf == null) return;
-        buf.Release();
+        T[] data = new T[buffer.count];
+        buffer.GetData(data);
+        return data;
     }
 
-    /// <summary>Releases the buffer if there is one</summary>
-    public static void Release(GraphicsBuffer buf)
+    /// <summary>Reads the buffer without stalling. The data is only valid inside onRead, so copy what you keep</summary>
+    /// <param name="onError">Runs instead of onRead if the read fails</param>
+    public static void ReadAsync<T>(this ComputeBuffer buffer, Action<NativeArray<T>> onRead, Action onError = null) where T : struct
     {
-        if (buf == null) return;
-        buf.Release();
+        AsyncGPUReadback.Request(buffer, request =>
+        {
+            if (request.hasError) onError?.Invoke();
+            else onRead(request.GetData<T>());
+        });
     }
     #endregion
 
-    #region Dispatch helpers
+    #region Binding
+    /// <summary>Binds every buffer to every kernel. Each must be declared in the shader</summary>
+    public static void SetBuffers(this ComputeShader compute, IEnumerable<int> kernels, IReadOnlyDictionary<string, ComputeBuffer> buffers)
+    {
+        foreach (int kernel in kernels)
+            foreach (var buffer in buffers)
+                compute.SetBuffer(kernel, buffer.Key, buffer.Value);
+    }
+
+    /// <summary>Points each read-only view (a name ending in RO) at the buffer it views</summary>
+    public static void LinkReadOnlyViews(Dictionary<string, ComputeBuffer> buffers)
+    {
+        foreach (string name in buffers.Keys.Where(name => name.EndsWith(ReadOnlySuffix)).ToList())
+        {
+            if (buffers.TryGetValue(name[..^ReadOnlySuffix.Length], out ComputeBuffer viewed))
+                buffers[name] = viewed;
+        }
+    }
+    #endregion
+
+    #region Releasing
+    /// <summary>Releases the buffer if there is one</summary>
+    public static void Release(ComputeBuffer buffer) => buffer?.Release();
+
+    /// <summary>Releases the buffer if there is one</summary>
+    public static void Release(GraphicsBuffer buffer) => buffer?.Release();
+
+    /// <summary>Releases each buffer once, even if it's listed more than once</summary>
+    public static void Release(IEnumerable<ComputeBuffer> buffers)
+    {
+        foreach (ComputeBuffer buffer in buffers.Distinct())
+            Release(buffer);
+    }
+    #endregion
+
+    #region Dispatching
     public static void Dispatch(this ComputeShader compute, int kernelIndex, int3 threadGroups)
         => compute.Dispatch(kernelIndex, threadGroups.x, threadGroups.y, threadGroups.z);
-
-    public static void Dispatch(this ComputeShader compute, int kernelIndex, int threadGroupX, int threadGroupY, int threadGroupZ)
-        => compute.Dispatch(kernelIndex, threadGroupX, threadGroupY, threadGroupZ);
 
     public static void Dispatch(this ComputeShader compute, int kernelIndex, int2 threadGroups)
         => compute.Dispatch(kernelIndex, threadGroups.x, threadGroups.y, 1);
 
-    public static void Dispatch(this ComputeShader compute, int kernelIndex, int threadGroupX, int threadGroupY)
-        => compute.Dispatch(kernelIndex, threadGroupX, threadGroupY, 1);
-
-    public static void Dispatch(this ComputeShader compute, int kernelIndex, int threadGroupX)
-        => compute.Dispatch(kernelIndex, threadGroupX, 1, 1);
+    /// <summary>Runs a kernel on at least this many threads</summary>
+    public static void DispatchThreads(this ComputeShader compute, int kernelIndex, int threadsX, int threadsY = 1, int threadsZ = 1)
+        => compute.Dispatch(kernelIndex, compute.GetThreadGroups(kernelIndex, threadsX, threadsY, threadsZ));
 
     /// <summary>Thread groups needed to cover this many iterations</summary>
     public static int3 GetThreadGroups(this ComputeShader compute, int kernelIndex, int numIterationsX, int numIterationsY = 1, int numIterationsZ = 1)
@@ -147,170 +149,16 @@ public static class ComputeHelper
         => System.Runtime.InteropServices.Marshal.SizeOf(typeof(T));
     #endregion
 
-    #region Readback helpres
-    /// <summary>Logs one texture value, without waiting for the GPU</summary>
-    public static void LogTexture<T>(RenderTexture texture, int index) where T : struct
-    {
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the texture"); return; }
-            Debug.Log(request.GetData<T>()[index]);
-        });
-    }
-
-    /// <summary>Logs some texture values, without waiting for the GPU</summary>
-    public static void LogTexture<T>(RenderTexture texture, List<int> indices) where T : struct
-    {
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the texture"); return; }
-            var data = request.GetData<T>();
-            foreach (var i in indices)
-                Debug.Log(data[i]);
-        });
-    }
-
-    /// <summary>Copy of the texture</summary>
-    public static RenderTexture GetTexture<T>(RenderTexture texture) where T : struct
-    {
-        RenderTexture result = CopyTexture(texture);
-        Graphics.Blit(texture, result);
-        return result;
-    }
-
-    /// <summary>One texture value. Waits for the GPU</summary>
-    public static T GetTexture<T>(RenderTexture texture, int index) where T : struct
-    {
-        T result = default;
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the texture"); return; }
-            result = request.GetData<T>()[index];
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>One column of the texture. Waits for the GPU</summary>
-    public static List<T> GetTextureStripe<T>(RenderTexture texture, int XIndex) where T : struct
-    {
-        List<T> result = new();
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the texture"); return; }
-            var data = request.GetData<T>();
-            for (int y = 0; y < texture.height; y++)
-                result.Add(data[XIndex + y * texture.width]);
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>Some texture values. Waits for the GPU</summary>
-    public static T[] GetTexture<T>(RenderTexture texture, List<int> indices) where T : struct
-    {
-        T[] result = new T[indices.Count];
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the texture"); return; }
-            var data = request.GetData<T>();
-            result = indices.Select(i => data[i]).ToArray();
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>The whole texture as a 2D array. Waits for the GPU</summary>
-    public static T[,] GetTextureAs2DArr<T>(RenderTexture texture) where T : struct
-    {
-        T[,] result = new T[texture.width, texture.height];
-        AsyncGPUReadback.Request(texture, 0, request =>
-        {
-            if (request.hasError) { Debug.Log("GPU sim manager: couldn't get the texture"); return; }
-            var data = request.GetData<T>();
-            for (int i = 0; i < texture.height; i++)
-                for (int j = 0; j < texture.width; j++)
-                    result[j, i] = data[i * texture.width + j];
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>Logs one buffer value, without waiting for the GPU</summary>
-    public static void LogBuffer<T>(ComputeBuffer buffer, int index) where T : struct
-    {
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the buffer"); return; }
-            Debug.Log(request.GetData<T>()[index]);
-        });
-    }
-
-    /// <summary>Logs some buffer values, without waiting for the GPU</summary>
-    public static void LogBuffer<T>(ComputeBuffer buffer, List<int> indices) where T : struct
-    {
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the buffer"); return; }
-            var data = request.GetData<T>();
-            foreach (var i in indices)
-                Debug.Log(data[i]);
-        });
-    }
-
-    /// <summary>The whole buffer. Waits for the GPU</summary>
-    public static T[] GetBuffer<T>(ComputeBuffer buffer) where T : struct
-    {
-        T[] result = null;
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the buffer"); return; }
-            result = request.GetData<T>().ToArray();
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>One buffer value. Waits for the GPU</summary>
-    public static T GetBuffer<T>(ComputeBuffer buffer, int index) where T : struct
-    {
-        T result = default;
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the buffer"); return; }
-            result = request.GetData<T>()[index];
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-
-    /// <summary>Some buffer values. Waits for the GPU</summary>
-    public static T[] GetBuffer<T>(ComputeBuffer buffer, List<int> indices) where T : struct
-    {
-        T[] result = new T[indices.Count];
-        AsyncGPUReadback.Request(buffer, request =>
-        {
-            if (request.hasError) { Debug.Log("Compute helper: couldn't get the buffer"); return; }
-            var data = request.GetData<T>();
-            result = indices.Select(i => data[i]).ToArray();
-        });
-        AsyncGPUReadback.WaitAllRequests();
-        return result;
-    }
-    #endregion
-
     // Editor only
-    #region Shader reflection helpers 
+    #region Shader reflection
     /// <summary>Kernel ids by name, read from the #pragma kernel lines</summary>
     public static Dictionary<string, int> GetKernels(ComputeShader compute)
     {
-        string path = AssetDatabase.GetAssetPath(compute);
-        string source = File.ReadAllText(path);
-        string[] lines = source.Split('\n').Where(l => l.Contains("#pragma kernel")).ToArray();
+        string[] lines = ReadSource(compute).Where(l => l.Contains("#pragma kernel")).ToArray();
         Dictionary<string, int> result = new();
 
         for (int i = 0; i < lines.Length; i++)
-            result.Add(lines[i].Split(' ').Last(), i);
+            result.Add(lines[i].Split(' ').Last().Trim(), i);
 
         return result;
     }
@@ -318,29 +166,14 @@ public static class ComputeHelper
     /// <summary>Every buffer the shader declares, by name, set to null for the caller to fill</summary>
     public static Dictionary<string, ComputeBuffer> GetBuffers(ComputeShader compute)
     {
-        string path = AssetDatabase.GetAssetPath(compute);
-        string source = File.ReadAllText(path);
-        string[] lines = source.Split('\n').Where(line => bufferTypes.Any(t => line.Contains(t))).ToArray();
         Dictionary<string, ComputeBuffer> result = new();
 
-        for (int i = 0; i < lines.Length; i++)
-            result.Add(lines[i].Split(' ').Last()[..^1], null);
+        foreach (string line in ReadSource(compute).Where(line => BufferTypes.Any(type => line.Contains(type))))
+            result.Add(line.Split(' ').Last()[..^1], null);
 
         return result;
     }
 
-    /// <summary>Every texture the shader declares, by name, set to null for the caller to fill</summary>
-    public static Dictionary<string, RenderTexture> GetTextures(ComputeShader compute)
-    {
-        string path = AssetDatabase.GetAssetPath(compute);
-        string source = File.ReadAllText(path);
-        string[] lines = source.Split('\n').Where(line => textureTypes.Any(t => line.Contains(t))).ToArray();
-        Dictionary<string, RenderTexture> result = new();
-
-        for (int i = 0; i < lines.Length; i++)
-            result.Add(lines[i].Split(' ').Last()[..^1], null);
-
-        return result;
-    }
+    private static string[] ReadSource(ComputeShader compute) => File.ReadAllText(AssetDatabase.GetAssetPath(compute)).Split('\n');
     #endregion
 }

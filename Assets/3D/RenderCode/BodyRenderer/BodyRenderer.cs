@@ -44,8 +44,7 @@ public class BodyRenderer : MonoBehaviour
     private RenderParams SetupDraw(SimulationManager sim, Mesh mesh, BodyShape3D shape, int part, ref GraphicsBuffer commandBuf)
     {
         ComputeHelper.Release(commandBuf);
-        commandBuf = ComputeHelper.CreateCommandBuffer();
-        commandBuf.SetData(ComputeHelper.CreateCommandData(mesh, sim.Buffers["BodyStates"].count));
+        commandBuf = ComputeHelper.CreateDrawArgs(mesh, sim.Buffers["BodyStates"].count);
 
         RenderParams rp = ComputeHelper.CreateRenderParams(material);
         rp.matProps.SetBuffer("BodyStates", sim.Buffers["BodyStates"]);

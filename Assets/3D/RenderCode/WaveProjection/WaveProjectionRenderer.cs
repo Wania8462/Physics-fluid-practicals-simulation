@@ -1,4 +1,3 @@
-using Unity.Mathematics;
 using UnityEngine;
 
 /// <summary>The ripple tank view: a white plane on the tank floor, lit by light focused through the waves</summary>
@@ -53,7 +52,7 @@ public class WaveProjectionRenderer : MonoBehaviour
         gridHeight = Mathf.Max(1, Mathf.RoundToInt(tank.size.z / cellTarget));
         cellSize = new Vector2(tank.size.x / gridWidth, tank.size.z / gridHeight);
 
-        counts = ComputeHelper.CreateStructuredBufferWithData<uint>(gridWidth * gridHeight);
+        counts = ComputeHelper.CreateBuffer<uint>(gridWidth * gridHeight);
         heights = CreateTexture();
         blurTemp = CreateTexture();
         blurred = CreateTexture();
@@ -94,14 +93,11 @@ public class WaveProjectionRenderer : MonoBehaviour
     {
         SetSettings();
 
-        compute.Dispatch(clearKernel, compute.GetThreadGroups(clearKernel, gridWidth * gridHeight));
-        compute.Dispatch(depositKernel, compute.GetThreadGroups(depositKernel, sim.numParticles));
+        compute.DispatchThreads(clearKernel, gridWidth * gridHeight);
+        compute.DispatchThreads(depositKernel, sim.numParticles);
 
-        int3 gridGroups = compute.GetThreadGroups(resolveKernel, gridWidth, gridHeight);
-        compute.Dispatch(resolveKernel, gridGroups);
-        compute.Dispatch(blurXKernel, gridGroups);
-        compute.Dispatch(blurYKernel, gridGroups);
-        compute.Dispatch(lightKernel, gridGroups);
+        foreach (int kernel in new[] { resolveKernel, blurXKernel, blurYKernel, lightKernel })
+            compute.DispatchThreads(kernel, gridWidth, gridHeight);
 
         // Still water maps to planeBrightness, brighter light rolls off towards white
         material.SetFloat("exposure", -Mathf.Log(1 - planeBrightness));
@@ -131,8 +127,8 @@ public class WaveProjectionRenderer : MonoBehaviour
         compute.SetInts("edgeCells",
             Mathf.Min(Mathf.CeilToInt(margin / cellSize.x), (gridWidth - 1) / 2),
             Mathf.Min(Mathf.CeilToInt(margin / cellSize.y), (gridHeight - 1) / 2));
-        compute.SetFloat("particleHeight", Mathf.Pow(sim.Spacing, 3) / (cellSize.x * cellSize.y));
-        compute.SetFloat("temporalBlend", resetHistory ? 1 : 1 - Mathf.Exp(-Time.deltaTime / smoothingTime));
+        compute.SetFloat("particleHeight", FluidMath3D.HeightPerParticle(sim.Spacing, cellSize.x * cellSize.y));
+        compute.SetFloat("temporalBlend", resetHistory ? 1 : FluidMath3D.SmoothingBlend(Time.deltaTime, smoothingTime));
         compute.SetInt("blurRadiusX", Mathf.CeilToInt(3 * sigma / cellSize.x));
         compute.SetInt("blurRadiusY", Mathf.CeilToInt(3 * sigma / cellSize.y));
         compute.SetVector("blurFalloff", new Vector2(BlurFalloff(sigma, cellSize.x), BlurFalloff(sigma, cellSize.y)));

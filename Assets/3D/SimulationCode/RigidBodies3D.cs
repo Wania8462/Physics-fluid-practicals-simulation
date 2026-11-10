@@ -220,11 +220,10 @@ public static class RigidBodies3D
         }
 
         float mass = body.boundaryBodyMass > 0 ? body.boundaryBodyMass : properties.count;
-        float r = body.bodyRadius;
         float inertia = body.shape switch
         {
-            BodyShape3D.Cube => mass * (2 * r) * (2 * r) / 6,
-            BodyShape3D.Sphere => 0.4f * mass * r * r,
+            BodyShape3D.Cube => RigidBodyMath3D.CubeInertia(mass, body.bodyRadius),
+            BodyShape3D.Sphere => RigidBodyMath3D.SphereInertia(mass, body.bodyRadius),
             _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no inertia for shape {body.shape}")
         };
 
@@ -235,8 +234,8 @@ public static class RigidBodies3D
     /// <summary>The bodyRadius that gives a body this volume</summary>
     public static float RadiusFromVolume(BodyShape3D shape, float volume) => shape switch
     {
-        BodyShape3D.Cube => math.pow(volume, 1f / 3) / 2,
-        BodyShape3D.Sphere => math.pow(3 * volume / (4 * math.PI), 1f / 3),
+        BodyShape3D.Cube => RigidBodyMath3D.CubeHalfEdgeFromVolume(volume),
+        BodyShape3D.Sphere => RigidBodyMath3D.SphereRadiusFromVolume(volume),
         _ => throw new ArgumentOutOfRangeException(nameof(shape), $"Rigid bodies: no volume for shape {shape}")
     };
 
@@ -287,30 +286,12 @@ public static class RigidBodies3D
     {
         double depth = height / (2.0 * body.bodyRadius);
 
-        switch (body.shape)
+        return body.shape switch
         {
-            case BodyShape3D.Sphere:
-                double x = math.saturate(depth + 0.5);
-                return x * x * (3 - 2 * x);
-
-            case BodyShape3D.Cube:
-                // Tiny instead of zero, because the sum below divides by each component
-                double3 n = math.max(math.abs((double3)up), 1e-3);
-                double level = depth + (n.x + n.y + n.z) / 2;
-
-                double volume = 0;
-                for (int corner = 0; corner < 8; corner++)
-                {
-                    int a = corner & 1, b = (corner >> 1) & 1, c = (corner >> 2) & 1;
-                    double past = math.max(level - (a * n.x + b * n.y + c * n.z), 0.0);
-                    volume += ((a ^ b ^ c) == 0 ? 1 : -1) * past * past * past;
-                }
-
-                return math.saturate(volume / (6 * n.x * n.y * n.z));
-
-            default:
-                throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no submerged volume for shape {body.shape}");
-        }
+            BodyShape3D.Sphere => RigidBodyMath3D.SphereFractionBelow(depth),
+            BodyShape3D.Cube => RigidBodyMath3D.CubeFractionBelow(depth, up),
+            _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no submerged volume for shape {body.shape}")
+        };
     }
 
     /// <summary>Applies mass changes live, other settings need a reset</summary>
@@ -341,38 +322,33 @@ public static class RigidBodies3D
         propertiesBuffer.SetData(data.properties);
     }
 
-    /// <summary>Creates the GPU buffers, at least one element each so they exist without bodies</summary>
+    /// <summary>Creates the GPU buffers, at least one element each so they exist without bodies. The caller links the read-only views</summary>
     public static void CreateBuffers(Dictionary<string, ComputeBuffer> buffers, RigidBodyData3D data, int numCells)
     {
-        int boundaryCount = math.max(data.NumBoundaryParticles, 1);
-        int slotCount = math.max(data.NumBodies, 1) * ReductionThreads;
+        int boundaryCount = data.NumBoundaryParticles;
+        int bodyCount = math.max(data.NumBodies, 1);
+        int slotCount = bodyCount * ReductionThreads;
 
-        buffers["BoundaryPositions"] = CreateNonEmptyBuffer(data.boundaryPositions);
-        buffers["BoundaryVelocities"] = ComputeHelper.CreateStructuredBufferWithData<float4>(boundaryCount);
-        buffers["BoundaryRestPositions"] = CreateNonEmptyBuffer(data.boundaryRestPositions);
-        buffers["BoundaryVolumes"] = ComputeHelper.CreateStructuredBufferWithData<float>(boundaryCount);
-        buffers["BoundaryForceBuffersX"] = ComputeHelper.CreateStructuredBufferWithData<int>(boundaryCount);
-        buffers["BoundaryForceBuffersY"] = ComputeHelper.CreateStructuredBufferWithData<int>(boundaryCount);
-        buffers["BoundaryForceBuffersZ"] = ComputeHelper.CreateStructuredBufferWithData<int>(boundaryCount);
-        buffers["BoundaryBodyIndices"] = CreateNonEmptyBuffer(data.boundaryBodyIndices);
-        buffers["BoundaryCellStart"] = ComputeHelper.CreateStructuredBufferWithData<uint>(numCells + 1);
-        buffers["BoundarySortedIndices"] = ComputeHelper.CreateStructuredBufferWithData<uint>(boundaryCount);
+        buffers["BoundaryPositions"] = ComputeHelper.CreateBuffer(data.boundaryPositions);
+        buffers["BoundaryVelocities"] = ComputeHelper.CreateBuffer<float4>(boundaryCount);
+        buffers["BoundaryRestPositions"] = ComputeHelper.CreateBuffer(data.boundaryRestPositions);
+        buffers["BoundaryVolumes"] = ComputeHelper.CreateBuffer<float>(boundaryCount);
+        buffers["BoundaryForceBuffersX"] = ComputeHelper.CreateBuffer<int>(boundaryCount);
+        buffers["BoundaryForceBuffersY"] = ComputeHelper.CreateBuffer<int>(boundaryCount);
+        buffers["BoundaryForceBuffersZ"] = ComputeHelper.CreateBuffer<int>(boundaryCount);
+        buffers["BoundaryBodyIndices"] = ComputeHelper.CreateBuffer(data.boundaryBodyIndices);
+        buffers["BoundaryCellStart"] = ComputeHelper.CreateBuffer<uint>(numCells + 1);
+        buffers["BoundarySortedIndices"] = ComputeHelper.CreateBuffer<uint>(boundaryCount);
+        buffers["BoundaryWet"] = ComputeHelper.CreateBuffer<uint>(boundaryCount);
 
-        buffers["BodyProperties"] = CreateNonEmptyBuffer(data.properties);
-        buffers["BodyStates"] = CreateNonEmptyBuffer(data.states);
-        buffers["BodyCouplingSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * CouplingSlotSize);
-        buffers["BodyContactSums"] = ComputeHelper.CreateStructuredBufferWithData<float4>(slotCount * ContactSlotSize);
-        buffers["BodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
-        buffers["SmoothedBodyForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * ForceCount);
-        buffers["BodyScaleForces"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1) * MaxScales);
-        buffers["BodySubmergedUp"] = ComputeHelper.CreateStructuredBufferWithData<float4>(math.max(data.NumBodies, 1));
-        buffers["BoundaryWet"] = ComputeHelper.CreateStructuredBufferWithData<uint>(boundaryCount);
-
-        buffers["BoundaryPositionsRO"] = buffers["BoundaryPositions"];
-        buffers["BoundaryVelocitiesRO"] = buffers["BoundaryVelocities"];
-        buffers["BoundaryVolumesRO"] = buffers["BoundaryVolumes"];
-        buffers["BoundaryCellStartRO"] = buffers["BoundaryCellStart"];
-        buffers["BoundarySortedIndicesRO"] = buffers["BoundarySortedIndices"];
+        buffers["BodyProperties"] = ComputeHelper.CreateBuffer(data.properties);
+        buffers["BodyStates"] = ComputeHelper.CreateBuffer(data.states);
+        buffers["BodyCouplingSums"] = ComputeHelper.CreateBuffer<float4>(slotCount * CouplingSlotSize);
+        buffers["BodyContactSums"] = ComputeHelper.CreateBuffer<float4>(slotCount * ContactSlotSize);
+        buffers["BodyForces"] = ComputeHelper.CreateBuffer<float4>(bodyCount * ForceCount);
+        buffers["SmoothedBodyForces"] = ComputeHelper.CreateBuffer<float4>(bodyCount * ForceCount);
+        buffers["BodyScaleForces"] = ComputeHelper.CreateBuffer<float4>(bodyCount * MaxScales);
+        buffers["BodySubmergedUp"] = ComputeHelper.CreateBuffer<float4>(bodyCount);
     }
 
     /// <summary>Removes fluid particles closer than margin to a body</summary>
@@ -459,32 +435,12 @@ public static class RigidBodies3D
     /// <summary>Distance from a point to a body's surface, negative inside</summary>
     private static float SignedDistance(RigidBodySettings3D body, float3 local) => body.shape switch
     {
-        BodyShape3D.Cube => BoxSignedDistance(local, body.CubeHalfExtents),
+        BodyShape3D.Cube => RigidBodyMath3D.BoxSignedDistance(local, body.CubeHalfExtents),
         BodyShape3D.Sphere => math.length(local) - body.bodyRadius,
-        BodyShape3D.Scale => math.min(BoxSignedDistance(local, ScaleHalfExtents),
-            CylinderSignedDistance(local - new float3(0, ScaleHalfExtents.y + ScalePanHalfHeight, 0), ScalePanRadius, ScalePanHalfHeight)),
+        BodyShape3D.Scale => math.min(RigidBodyMath3D.BoxSignedDistance(local, ScaleHalfExtents),
+            RigidBodyMath3D.CylinderSignedDistance(local - new float3(0, ScaleHalfExtents.y + ScalePanHalfHeight, 0), ScalePanRadius, ScalePanHalfHeight)),
         _ => throw new ArgumentOutOfRangeException(nameof(body), $"Rigid bodies: no signed distance for shape {body.shape}")
     };
 
-    /// <summary>Distance to a box's surface, negative inside</summary>
-    private static float BoxSignedDistance(float3 local, float3 halfExtents)
-    {
-        float3 q = math.abs(local) - halfExtents;
-        return math.length(math.max(q, 0f)) + math.min(math.cmax(q), 0f);
-    }
-
-    /// <summary>Distance to a cylinder standing along y, negative inside</summary>
-    private static float CylinderSignedDistance(float3 local, float radius, float halfHeight)
-    {
-        float2 d = new(math.length(local.xz) - radius, math.abs(local.y) - halfHeight);
-        return math.length(math.max(d, 0f)) + math.min(math.cmax(d), 0f);
-    }
-
     private static quaternion GetRotation(RigidBodySettings3D body) => quaternion.Euler(math.radians(body.bodyRotation));
-
-    /// <summary>A buffer of the data, or of one empty element if there's none</summary>
-    private static ComputeBuffer CreateNonEmptyBuffer<T>(List<T> data) where T : struct =>
-        data.Count > 0
-            ? ComputeHelper.CreateStructuredBufferWithData(data.ToArray())
-            : ComputeHelper.CreateStructuredBufferWithData<T>(1);
 }

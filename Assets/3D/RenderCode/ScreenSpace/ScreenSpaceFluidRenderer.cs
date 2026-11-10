@@ -161,7 +161,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         float renderRadius = settings.renderRadiusScale * spacing;
         particleMaterial.SetFloat(ParticleRenderRadiusId, renderRadius);
         // Each particle adds its real volume (one spacing cube) to the thickness, whatever size it's drawn
-        particleMaterial.SetFloat(ThicknessScaleId, Mathf.Pow(spacing, 3) / (4f / 3f * Mathf.PI * Mathf.Pow(renderRadius, 3)));
+        particleMaterial.SetFloat(ThicknessScaleId, FluidMath3D.ParticleVolume(spacing) / RigidBodyMath3D.SphereVolume(renderRadius));
         smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadiusScale * spacing);
         smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeScale * spacing);
         smoothMaterial.SetFloat(MaxScreenRadiusId, settings.maxScreenRadius);

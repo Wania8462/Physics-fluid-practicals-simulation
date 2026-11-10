@@ -117,7 +117,9 @@ A cell's particles are then `SortedIndices[CellStart[c] .. CellStart[c+1])`. The
 ### GPU plumbing worth knowing
 
 - **Every buffer is bound to every kernel** (`SetBuffers`). Buffer names in C# must match the names in `Simulation.compute`.
-- **`…RO` buffers** are read-only aliases of the same `ComputeBuffer`. They exist because a kernel can bind only 8 read-write buffers.
+- **`…RO` buffers** are read-only aliases of the same `ComputeBuffer`. They exist because a kernel can bind only 8 read-write buffers. `ComputeHelper.LinkReadOnlyViews` points every name ending in `RO` at its buffer, so a new one only needs declaring in `Simulation.compute`.
+- **`ComputeHelper`** does the buffer chores: `CreateBuffer` (never empty, zeroed or filled from data), `CreateDrawArgs` for indirect draws, `Read`/`ReadAsync`/`SetElement`, `SetBuffers` and `Release`, which releases a shared buffer once.
+- **C# math** lives in `FluidMath3D.cs` and `RigidBodyMath3D.cs`, which mirror the `.hlsl` files of the same names: kernel factors, column weights, smoothing blends, shape volumes, inertias and signed distances.
 - **Force accumulators** (`ForceBuffersX/Y/Z`, `BoundaryForceBuffersX/Y/Z`) are `int`, storing value × 10⁶. HLSL has no atomic float add, so atomics go through fixed point. A value above about ±2147 per step overflows, and anything below 10⁻⁶ is lost.
 - **C#/HLSL structs must match byte for byte**: `RigidBodyProperties3D`/`RigidBodyState3D` in `RigidBodies3D.cs` mirror `RigidBodyProperties`/`RigidBodyState` in `RigidBodyMath3D.hlsl`. So do `MaxScales`, `ReductionThreads`, the slot sizes and the force order (also used by `Visualiser.cs`).
 - **Rigid-body kernels** live in `RigidBodyKernels3D.hlsl`, but their `#pragma kernel` lines and buffers have to stay in `Simulation.compute`, because that's the only file `ComputeHelper` reads.
@@ -287,7 +289,7 @@ W(r) = \frac{315}{64\pi h^9}\,(h^2 - r^2)^3
 \nabla W_{ij} = \frac{45}{\pi h^6}\,(h - r)^2\,\hat{\mathbf r}_{ij}
 $$
 
-for $r < h$, and zero otherwise. $\hat{\mathbf r}_{ij}$ is the unit vector from particle $i$ towards $j$. The constant factors are computed on the CPU (`poly6Factor`, `spikyGradFactor`).
+for $r < h$, and zero otherwise. $\hat{\mathbf r}_{ij}$ is the unit vector from particle $i$ towards $j$. The constant factors are computed on the CPU (`poly6Factor`, `spikyGradFactor`) by `FluidMath3D.cs`.
 
 ### Density constraint
 

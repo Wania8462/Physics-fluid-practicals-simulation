@@ -177,8 +177,7 @@ public class Visualiser : MonoBehaviour
         }
 
         ComputeHelper.Release(commandBuf);
-        commandBuf = ComputeHelper.CreateCommandBuffer();
-        commandBuf.SetData(ComputeHelper.CreateCommandData(mesh, sim.Buffers["BodyStates"].count * ArrowsPerBody));
+        commandBuf = ComputeHelper.CreateDrawArgs(mesh, sim.Buffers["BodyStates"].count * ArrowsPerBody);
 
         rp = ComputeHelper.CreateRenderParams(material);
         rp.matProps.SetBuffer("BodyStates", sim.Buffers["BodyStates"]);
@@ -240,8 +239,8 @@ public class Visualiser : MonoBehaviour
         // Reads the forces back for the value labels
         if (showValues)
         {
-            AsyncGPUReadback.Request(statesBuffer, request => { if (!request.hasError) states = request.GetData<RigidBodyState3D>().ToArray(); });
-            AsyncGPUReadback.Request(forcesBuffer, request => { if (!request.hasError) forces = request.GetData<Vector4>().ToArray(); });
+            statesBuffer.ReadAsync<RigidBodyState3D>(data => states = data.ToArray());
+            forcesBuffer.ReadAsync<Vector4>(data => forces = data.ToArray());
         }
     }
 
