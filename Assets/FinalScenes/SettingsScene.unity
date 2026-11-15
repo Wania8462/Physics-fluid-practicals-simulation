@@ -4889,8 +4889,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SettingsScript
   slider: {fileID: 2071771493}
-  themeDropdown: {fileID: 786723693}
-  unitsDropdown: {fileID: 1145881109}
+  themeDropdown: {fileID: 1145881109}
+  unitsDropdown: {fileID: 786723693}
   colorblindDropdown: {fileID: 547061450}
 --- !u!1 &1830803517
 GameObject:

@@ -26,8 +26,8 @@ public class WaveProjectionRenderer : MonoBehaviour
     private RenderParams renderParams;
     private Matrix4x4 planeTransform;
 
-    private ComputeBuffer counts;
-    private RenderTexture heights, blurTemp, blurred, lightMap;
+    private ComputeBuffer counts, heights, blurTemp;
+    private RenderTexture blurred, lightMap;
 
     private int clearKernel, depositKernel, resolveKernel, blurXKernel, blurYKernel, lightKernel;
     private int gridWidth, gridHeight;
@@ -47,9 +47,9 @@ public class WaveProjectionRenderer : MonoBehaviour
         gridHeight = Mathf.Max(1, Mathf.RoundToInt(tank.size.z / sim.Spacing));
         cellSize = new Vector2(tank.size.x / gridWidth, tank.size.z / gridHeight);
 
-        counts = ComputeHelper.CreateBuffer<uint>(gridWidth * gridHeight);
-        heights = CreateTexture();
-        blurTemp = CreateTexture();
+        counts = ComputeHelper.CreateBuffer<uint>(2 * gridWidth * gridHeight);
+        heights = ComputeHelper.CreateBuffer<Vector2>(gridWidth * gridHeight);
+        blurTemp = ComputeHelper.CreateBuffer<Vector2>(gridWidth * gridHeight);
         blurred = CreateTexture();
         lightMap = CreateTexture();
 
@@ -64,10 +64,10 @@ public class WaveProjectionRenderer : MonoBehaviour
         compute.SetBuffer(depositKernel, "Counts", counts);
         compute.SetBuffer(depositKernel, "Positions", sim.Buffers["Positions"]);
         compute.SetBuffer(resolveKernel, "Counts", counts);
-        compute.SetTexture(resolveKernel, "Heights", heights);
-        compute.SetTexture(blurXKernel, "Heights", heights);
-        compute.SetTexture(blurXKernel, "BlurTemp", blurTemp);
-        compute.SetTexture(blurYKernel, "BlurTemp", blurTemp);
+        compute.SetBuffer(resolveKernel, "Heights", heights);
+        compute.SetBuffer(blurXKernel, "Heights", heights);
+        compute.SetBuffer(blurXKernel, "BlurTemp", blurTemp);
+        compute.SetBuffer(blurYKernel, "BlurTemp", blurTemp);
         compute.SetTexture(blurYKernel, "Blurred", blurred);
         compute.SetTexture(lightKernel, "Blurred", blurred);
         compute.SetTexture(lightKernel, "LightMap", lightMap);
@@ -88,7 +88,7 @@ public class WaveProjectionRenderer : MonoBehaviour
     {
         SetSettings();
 
-        compute.DispatchThreads(clearKernel, gridWidth * gridHeight);
+        compute.DispatchThreads(clearKernel, 2 * gridWidth * gridHeight);
         compute.DispatchThreads(depositKernel, sim.numParticles);
 
         foreach (int kernel in new[] { resolveKernel, blurXKernel, blurYKernel, lightKernel })
@@ -117,7 +117,8 @@ public class WaveProjectionRenderer : MonoBehaviour
         compute.SetInt("gridHeight", gridHeight);
         compute.SetVector("gridOrigin", new Vector2(-tank.halfSize.x, -tank.halfSize.z));
         compute.SetVector("cellSize", cellSize);
-        compute.SetFloat("particleHeight", FluidMath3D.HeightPerParticle(sim.Spacing, cellSize.x * cellSize.y));
+        compute.SetFloat("floorY", -tank.halfSize.y);
+        compute.SetFloat("tankHeight", tank.size.y);
         compute.SetFloat("temporalBlend", resetHistory ? 1 : FluidMath3D.SmoothingBlend(Time.deltaTime, smoothingTime));
         compute.SetInt("blurRadiusX", Mathf.CeilToInt(3 * sigma / cellSize.x));
         compute.SetInt("blurRadiusY", Mathf.CeilToInt(3 * sigma / cellSize.y));
@@ -144,8 +145,8 @@ public class WaveProjectionRenderer : MonoBehaviour
     private void ReleaseResources()
     {
         ComputeHelper.Release(counts);
-        Destroy(heights);
-        Destroy(blurTemp);
+        ComputeHelper.Release(heights);
+        ComputeHelper.Release(blurTemp);
         Destroy(blurred);
         Destroy(lightMap);
         Destroy(mesh);

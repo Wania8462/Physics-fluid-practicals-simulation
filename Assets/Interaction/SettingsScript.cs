@@ -31,6 +31,7 @@ public class SettingsScript : MonoBehaviour
     private void OnThemeChanged(int index)
     {
         AppSettings.theme = (Theme)index;
+        UIStyler.ApplyAll();
     }
 
     private void OnUnitsChanged(int index)
