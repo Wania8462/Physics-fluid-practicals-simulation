@@ -266,7 +266,7 @@ public class SimulationManager : MonoBehaviour
         compute.Dispatch(KernelIDs["CalculateVelocity"], threadGroups);
     }
 
-    /// <summary>Sorts particles into grid cells for neighbour search</summary>
+    /// <summary>Reorders the particles by grid cell, so neighbours are close in memory</summary>
     private void BuildGrid()
     {
         compute.Dispatch(KernelIDs["ClearGrid"], gridThreadGroups);
@@ -281,6 +281,7 @@ public class SimulationManager : MonoBehaviour
 
         compute.Dispatch(KernelIDs["ResetCursor"], gridThreadGroups);
         compute.Dispatch(KernelIDs["Scatter"], threadGroups);
+        compute.Dispatch(KernelIDs["CopySortedParticles"], threadGroups);
     }
 
     /// <summary>Sorts the boundary particles into grid cells</summary>
@@ -725,7 +726,9 @@ public class SimulationManager : MonoBehaviour
         Buffers["CellStart"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
         Buffers["ScanTemp"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
         Buffers["CellCursor"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
-        Buffers["SortedIndices"] = ComputeHelper.CreateBuffer<uint>(numParticles);
+        Buffers["SortedPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SortedPrevPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SortedVelocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
 

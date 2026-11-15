@@ -13,6 +13,7 @@
 #pragma kernel ScanStep
 #pragma kernel ResetCursor
 #pragma kernel Scatter
+#pragma kernel CopySortedParticles
 #pragma kernel ClearBoundaryGrid
 #pragma kernel CountBoundaryParticles
 #pragma kernel BoundaryScanStep
@@ -49,11 +50,13 @@ RWStructuredBuffer<float> Densities;
 RWStructuredBuffer<float> Lambdas;
 RWStructuredBuffer<float4> DeltaPositions;
 
-// Particles sorted by grid cell, for fast neighbour search
+// Particles are reordered by grid cell each step, so a cell's particles sit next to each other in memory
 RWStructuredBuffer<uint> CellStart;
 RWStructuredBuffer<uint> ScanTemp;
 RWStructuredBuffer<uint> CellCursor;
-RWStructuredBuffer<uint> SortedIndices;
+RWStructuredBuffer<float4> SortedPositions;
+RWStructuredBuffer<float4> SortedPrevPositions;
+RWStructuredBuffer<float4> SortedVelocities;
 
 // Boundary particles: points on the surface of every rigid body
 RWStructuredBuffer<float4> BoundaryPositions;
@@ -86,7 +89,6 @@ StructuredBuffer<float4> PositionsRO;
 StructuredBuffer<float4> VelocitiesRO;
 StructuredBuffer<float> LambdasRO;
 StructuredBuffer<uint> CellStartRO;
-StructuredBuffer<uint> SortedIndicesRO;
 StructuredBuffer<float4> BoundaryPositionsRO;
 StructuredBuffer<float4> BoundaryVelocitiesRO;
 StructuredBuffer<float> BoundaryVolumesRO;
@@ -211,7 +213,7 @@ void CalculateLambdas (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            float4 neighbourPosition = PositionsRO[SortedIndicesRO[j]];
+            float4 neighbourPosition = PositionsRO[j];
             float magSq = DistanceSq(position, neighbourPosition);
             if (magSq >= interactionRadiusSq) continue;
 
@@ -263,7 +265,7 @@ void CalculateDeltaPositions (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            uint neighbour = SortedIndicesRO[j];
+            uint neighbour = j;
             float4 neighbourPosition = PositionsRO[neighbour];
             float magSq = DistanceSq(position, neighbourPosition);
             if (magSq == 0 || magSq >= interactionRadiusSq) continue;
@@ -322,7 +324,8 @@ void ApplyViscosity (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            uint neighbour = SortedIndicesRO[j];
+            // The grid is from last step, the particles haven't been reordered since
+            uint neighbour = j;
             float mag = Distance(position, PositionsRO[neighbour]);
             if (mag > interactionRadius || mag == 0) continue;
 
@@ -407,12 +410,25 @@ uint3 GetCellPosition(float4 position)
     (uint)clamp(scaled.z, 0, layers - 1));
 }
 
-uint GetCellIndex(uint3 cellPosition)
+// Puts two zero bits between each of the lowest 10 bits
+uint SpreadBits(uint v)
 {
-    return cellPosition.x + cellPosition.y * columns + cellPosition.z * columns * rows;
+    v &= 0x3ff;
+    v = (v | v << 16) & 0x30000ff;
+    v = (v | v << 8) & 0x300f00f;
+    v = (v | v << 4) & 0x30c30c3;
+    v = (v | v << 2) & 0x9249249;
+    return v;
 }
 
-// Grid building: sorts particles into cells so neighbours can be found quickly
+// Cells are numbered along a Z-order (Morton) curve, so cells close in space are close in memory.
+// Matches SPValues3D.Morton
+uint GetCellIndex(uint3 cellPosition)
+{
+    return SpreadBits(cellPosition.x) | SpreadBits(cellPosition.y) << 1 | SpreadBits(cellPosition.z) << 2;
+}
+
+// Grid building: reorders particles by cell so neighbours can be found quickly
 [numthreads(64,1,1)]
 void ClearGrid (uint3 id : SV_DispatchThreadID)
 {
@@ -462,7 +478,20 @@ void Scatter (uint3 id : SV_DispatchThreadID)
     uint destination;
     InterlockedAdd(CellCursor[cellIndex], 1, destination);
 
-    SortedIndices[destination] = id.x;
+    SortedPositions[destination] = Positions[id.x];
+    SortedPrevPositions[destination] = PrevPositions[id.x];
+    SortedVelocities[destination] = Velocities[id.x];
+}
+
+// Copies the reordered particles back, so the buffers the renderers hold stay the same
+[numthreads(64,1,1)]
+void CopySortedParticles (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    Positions[id.x] = SortedPositions[id.x];
+    PrevPositions[id.x] = SortedPrevPositions[id.x];
+    Velocities[id.x] = SortedVelocities[id.x];
 }
 
 // ---------- Rigid bodies ----------

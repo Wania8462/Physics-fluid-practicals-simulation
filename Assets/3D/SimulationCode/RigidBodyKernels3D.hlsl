@@ -560,7 +560,7 @@ bool HasFluidNear(float4 position)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            if (DistanceSq(position, PositionsRO[SortedIndicesRO[j]]) < wetDistanceSq)
+            if (DistanceSq(position, PositionsRO[j]) < wetDistanceSq)
                 return true;
         }
     }

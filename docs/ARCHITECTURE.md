@@ -104,15 +104,16 @@ flowchart TD
 
 ### The neighbour grid (`BuildGrid`)
 
-The tank is split into cubic cells with edge length `interactionRadius` (h), so every neighbour of a particle is in its own cell or one of the 26 around it. Particles are sorted by cell with a counting sort:
+The tank is split into cubic cells with edge length `interactionRadius` (h), so every neighbour of a particle is in its own cell or one of the 26 around it. Cells are numbered along a Z-order (Morton) curve (`GetCellIndex`, mirrored by `SPValues3D.Morton`), so cells close in space get close numbers. `NumCells` is the far corner's key + 1, which includes keys no cell uses (about 3× the real cell count for a 42³ grid), and each axis can have at most 1024 cells. Particles are sorted by cell with a counting sort:
 
 1. **ClearGrid**: zero `CellStart`.
 2. **CountParticles**: each particle atomically adds 1 to `CellStart[cell + 1]`.
 3. **ScanStep** × `numScanSteps`: a Hillis–Steele prefix sum, ping-ponging between `CellStart` and `ScanTemp`. The pass count is rounded up to even so the result ends in `CellStart`.
 4. **ResetCursor**: copy `CellStart` into `CellCursor`.
-5. **Scatter**: each particle atomically takes the next slot in its cell and writes its index to `SortedIndices`.
+5. **Scatter**: each particle atomically takes the next slot in its cell and copies its position, previous position and velocity there in `SortedPositions` / `SortedPrevPositions` / `SortedVelocities`.
+6. **CopySortedParticles**: copies those back into `Positions` / `PrevPositions` / `Velocities`.
 
-A cell's particles are then `SortedIndices[CellStart[c] .. CellStart[c+1])`. The boundary particles use the same steps with their own `BoundaryCellStart` / `BoundarySortedIndices`. They share `ScanTemp` and `CellCursor`.
+This is spatial reordering: the fluid particle arrays themselves are sorted by cell, so a cell's particles are `Positions[CellStart[c] .. CellStart[c+1])` and neighbours sit next to each other in memory. Particle indices change every step, so nothing may keep a particle's index across steps. `Densities` is still valid in `ApplyViscosity` because the next reorder runs after it. The boundary particles aren't reordered, since each body owns a fixed range of them. They use the same steps with their own `BoundaryCellStart` / `BoundarySortedIndices`, and share `ScanTemp` and `CellCursor`.
 
 ### GPU plumbing worth knowing
 
