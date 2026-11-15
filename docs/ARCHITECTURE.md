@@ -62,22 +62,17 @@ Kernels marked `*` only run when there is at least one rigid body.
 
 ```mermaid
 flowchart TD
-    subgraph V["1. Velocities"]
-        EF["ExternalForces: gravity"] --> CFB["ClearForceBuffers"]
-        CFB --> AV["ApplyViscosity + boundary friction"]
-        AV --> AFB["ApplyForceBuffersToVelocities"]
-    end
-
-    subgraph PR["2. Predict"]
-        APP["AdvancePredictedPositions: x* = x + dt·v"] --> BAP["BodyAdvancePredictedStates*"]
+    subgraph PR["1. Predict"]
+        EF["ExternalForces: gravity"] --> APP["AdvancePredictedPositions: x* = x + dt·v"]
+        APP --> BAP["BodyAdvancePredictedStates*"]
         BAP --> PBP1["PlaceBoundaryParticles*"]
     end
 
-    subgraph G["3. Neighbour grid"]
+    subgraph G["2. Neighbour grid"]
         BG["BuildGrid"] --> BBG["BuildBoundaryGrid*"]
     end
 
-    subgraph SOL["4. PBF solver, repeated solverIterations times"]
+    subgraph SOL["3. PBF solver, repeated solverIterations times"]
         CL["CalculateLambdas"] --> CBF["ClearBoundaryForceBuffers*"]
         CBF --> CDP["CalculateDeltaPositions"]
         CDP --> ADP["ApplyDeltaPositions"]
@@ -85,16 +80,17 @@ flowchart TD
         RBD --> CPL["SumCouplingForces → ApplyCouplingForces → PlaceBoundaryParticles*"]
     end
 
-    subgraph BOD["5. Bodies"]
+    subgraph BOD["4. Bodies"]
         CON["SumContacts → ApplyContacts*"] --> BCV["BodyCalculateVelocity → PlaceBoundaryParticles → ResolveBodyCollisions*"]
         BCV --> SBF["SmoothBodyForces*: for the arrows"]
     end
 
-    subgraph END["6. Finish"]
+    subgraph END["5. Finish"]
         RB2["ResolveBoundaries"] --> CV["CalculateVelocity: v = (x − x_prev) / dt"]
+        CV --> XS["ViscosityAndCohesion: XSPH + cohesion + boundary friction"]
+        XS --> ASV["ApplySmoothedVelocities"]
     end
 
-    AFB --> APP
     PBP1 --> BG
     BBG --> CL
     CPL -- "more iterations" --> CL
@@ -113,17 +109,17 @@ The tank is split into cubic cells with edge length `interactionRadius` (h), so 
 5. **Scatter**: each particle atomically takes the next slot in its cell and copies its position, previous position and velocity there in `SortedPositions` / `SortedPrevPositions` / `SortedVelocities`.
 6. **CopySortedParticles**: copies those back into `Positions` / `PrevPositions` / `Velocities`.
 
-This is spatial reordering: the fluid particle arrays themselves are sorted by cell, so a cell's particles are `Positions[CellStart[c] .. CellStart[c+1])` and neighbours sit next to each other in memory. Particle indices change every step, so nothing may keep a particle's index across steps. `Densities` is still valid in `ApplyViscosity` because the next reorder runs after it. The boundary particles aren't reordered, since each body owns a fixed range of them. They use the same steps with their own `BoundaryCellStart` / `BoundarySortedIndices`, and share `ScanTemp` and `CellCursor`.
+This is spatial reordering: the fluid particle arrays themselves are sorted by cell, so a cell's particles are `Positions[CellStart[c] .. CellStart[c+1])` and neighbours sit next to each other in memory. Particle indices change every step, so nothing may keep a particle's index across steps. `Densities` is still valid in `ViscosityAndCohesion` because the next reorder runs after it. The boundary particles aren't reordered, since each body owns a fixed range of them. They use the same steps with their own `BoundaryCellStart` / `BoundarySortedIndices`, and share `ScanTemp` and `CellCursor`.
 
 ### GPU plumbing worth knowing
 
-- **Every buffer is bound to every kernel** (`SetBuffers`). Buffer names in C# must match the names in `Simulation.compute`.
-- **`…RO` buffers** are read-only aliases of the same `ComputeBuffer`. They exist because a kernel can bind only 8 read-write buffers. `ComputeHelper.LinkReadOnlyViews` points every name ending in `RO` at its buffer, so a new one only needs declaring in `Simulation.compute`.
+- **Every buffer is bound to every kernel** (`SetBuffers`). `SimulationManager.Kernel(name)` finds a kernel with `FindKernel` the first time it's used and binds the buffers to it then, so nothing reads the shader source and builds work. Buffer names in C# must match the names in `Simulation.compute`; a buffer that's declared but never created in C# is never bound.
+- **`…RO` buffers** are read-only aliases of the same `ComputeBuffer`. They exist because a kernel can bind only 8 read-write buffers. `SetBuffers` binds every buffer under its name plus `RO` too, so a new view only needs declaring in `Simulation.compute`.
 - **`ComputeHelper`** does the buffer chores: `CreateBuffer` (never empty, zeroed or filled from data), `CreateDrawArgs` for indirect draws, `Read`/`ReadAsync`/`SetElement`, `SetBuffers` and `Release`, which releases a shared buffer once.
 - **C# math** lives in `FluidMath3D.cs` and `RigidBodyMath3D.cs`, which mirror the `.hlsl` files of the same names: kernel factors, column weights, smoothing blends, shape volumes, inertias and signed distances.
-- **Force accumulators** (`ForceBuffersX/Y/Z`, `BoundaryForceBuffersX/Y/Z`) are `int`, storing value × 10⁶. HLSL has no atomic float add, so atomics go through fixed point. A value above about ±2147 per step overflows, and anything below 10⁻⁶ is lost.
+- **Force accumulators** (`BoundaryForceBuffersX/Y/Z`) are `int`, storing value × 10⁶. HLSL has no atomic float add, so atomics go through fixed point. A value above about ±2147 per step overflows, and anything below 10⁻⁶ is lost.
 - **C#/HLSL structs must match byte for byte**: `RigidBodyProperties3D`/`RigidBodyState3D` in `RigidBodies3D.cs` mirror `RigidBodyProperties`/`RigidBodyState` in `RigidBodyMath3D.hlsl`. So do `MaxScales`, `ReductionThreads`, the slot sizes and the force order (also used by `Visualiser.cs`).
-- **Rigid-body kernels** live in `RigidBodyKernels3D.hlsl`, but their `#pragma kernel` lines and buffers have to stay in `Simulation.compute`, because that's the only file `ComputeHelper` reads.
+- **Rigid-body kernels** live in `RigidBodyKernels3D.hlsl`, but their `#pragma kernel` lines and buffers are declared in `Simulation.compute`.
 
 ---
 
@@ -338,7 +334,7 @@ $$
 s_{\text{corr}} = -k \left(\frac{W(r_{ij})}{W(0.2h)}\right)^4
 $$
 
-Because the constraint is one-sided, nothing holds the free surface together, so **`ApplyViscosity`** also adds Akinci et al. (2013) cohesion between fluid particles. $C$ attracts, but turns repulsive below about $0.28h$, so it can't cause the clumping (tensile instability) that unclamping the constraint would. The factor $2/(\rho_i + \rho_j)$, capped at 2, makes it act mostly on the under-dense surface. $\gamma$ is `cohesion`:
+Because the constraint is one-sided, nothing holds the free surface together, so **`ViscosityAndCohesion`** (after `CalculateVelocity`) adds Akinci et al. (2013) cohesion between fluid particles. $C$ attracts, but turns repulsive below about $0.28h$, so it can't cause the clumping (tensile instability) that unclamping the constraint would. The factor $2/(\rho_i + \rho_j)$, capped at 2, makes it act mostly on the under-dense surface. $\gamma$ is `cohesion`:
 
 $$
 \Delta\mathbf v_i = \Delta t\,\gamma \sum_j V\,\frac{2}{\rho_i + \rho_j}\,C(r_{ij})\,\hat{\mathbf r}_{ij}
@@ -364,20 +360,25 @@ $$
 
 It is 0.5 at the wall and 0 at one radius away. The gradient pushes the particle away from the wall through $\lambda_i$, the same way a neighbour would. `ResolveBoundaries` is only a backstop.
 
-### Viscosity (`ApplyViscosity`)
+### Viscosity (`ViscosityAndCohesion`)
 
-Runs on the velocities before prediction. For each pair of particles closing in on each other (inward speed $u = (\mathbf v_i - \mathbf v_j)\cdot\hat{\mathbf r}_{ij} > 0$), an impulse evens out their speeds:
+XSPH viscosity, as in the PBF paper (Macklin & Müller 2013). It shares one neighbour pass with cohesion and boundary friction, runs after `CalculateVelocity`, and blends each velocity towards a kernel-weighted average of its neighbours':
 
 $$
-\mathbf I_{ij} = \tfrac12\,\Delta t\,(1 - q)\,(\sigma + \beta)\,u\,\hat{\mathbf r}_{ij},
-\qquad q = r_{ij}/h
+\mathbf v_i \leftarrow \mathbf v_i + c \sum_j V\,(\mathbf v_j - \mathbf v_i)\,W_{\text{poly6}}(r_{ij}, h),
+\qquad c = \min(\nu\,\Delta t,\ 1)
 $$
 
-$i$ gets $-\mathbf I$ and $j$ gets $+\mathbf I$, accumulated atomically. $\sigma$ is `highViscosity` and $\beta$ is `lowViscosity`. This is the linear term of Clavet et al. (2005).
+$\nu$ is `viscosity`, a rate per sim second, so the thickness doesn't change with the step length. At 120 steps per second, $\nu = 1$ gives $c \approx 0.008$, close to the paper's 0.01. In the bulk $\sum_j V\,W \approx 1$, so $c$ is the fraction of the way each velocity moves towards its neighbours' average per step. Each particle only reads its neighbours, so the result goes to `SmoothedVelocities` and `ApplySmoothedVelocities` copies it back. The UI's "viscosity" control sets `viscosity`.
 
-> **Note:** in Clavet's original the second coefficient multiplies $u^2$. Here both multiply $u$, so the two settings act as one coefficient $\sigma + \beta$. The UI's "viscosity" control sets `lowViscosity`.
+**Boundary friction** (same kernel) is still a pairwise impulse between fluid and boundary particles, the linear term of Clavet et al. (2005):
 
-**Boundary friction** uses the same formula with $\sigma$ = `boundaryFriction`, between fluid particles and boundary particles. It only slows the fluid, and it keeps fluid from tunnelling into fast bodies.
+$$
+\mathbf I_{ij} = \Delta t\,(1 - q)\,\sigma\,u\,\hat{\mathbf r}_{ij},
+\qquad q = r_{ij}/h,\quad u = (\mathbf v_i - \mathbf v_j)\cdot\hat{\mathbf r}_{ij} > 0
+$$
+
+$\sigma$ is `boundaryFriction`. It only slows the fluid, and it keeps fluid from tunnelling into fast bodies.
 
 ### Rigid bodies
 
@@ -463,7 +464,7 @@ The solver works in sim units. The API converts at the boundary:
 | Length | `lengthScale` sim units per m | 200 |
 | Density | `densityScale` restDensity per kg/m³ | 1/1000 |
 | Gravity | `gravityScale` sim gravity per m/s² | 20 / 9.81 |
-| Viscosity | `viscosityScale` lowViscosity per mPa·s | 1 |
+| Viscosity | `viscosityScale` viscosity per mPa·s | 1 |
 | Mass | `densityScale · lengthScale³` per kg | derived |
 | Force | mass scale · gravity scale per N | derived |
 
@@ -480,14 +481,14 @@ These were picked by eye to look like water on Earth, not measured.
 | `artificialPressure` | $k$ in $s_{\text{corr}}$. 0.1 in the paper |
 | `cohesion` | $\gamma$. Pulls the surface together. 0 is off, too high pulls splashes into round droplets |
 | `restDensity` | Particle mass only. Sets buoyancy, not packing |
-| `highViscosity`, `lowViscosity` | Summed viscosity coefficient (see note above) |
+| `viscosity` | XSPH rate $\nu$ per sim second. 0 is off |
 | `boundaryFriction` | Fluid drag at body surfaces. ≤ 0 lets fluid tunnel |
 | `bodyFriction` | Coulomb μ between bodies, and against walls and scales |
 | `collisionDamping` | Inset distance after a wall clamp |
 
 ### Known approximations
 
-- **Viscosity uses the previous step's grid**: it runs before `BuildGrid`. Neighbours that crossed a cell boundary since then can be missed for one step.
+- **Cohesion and boundary friction use the previous step's grid**: they run before `BuildGrid`. Neighbours that crossed a cell boundary since then can be missed for one step. XSPH viscosity uses this step's grid, but positions have moved since it was built, the same as in the solver.
 - **Fixed-point atomics** cap per-step force accumulation at about ±2147 and round off below 10⁻⁶.
 - **Sequential fluid/body coupling**: light bodies can jitter.
 - **`relaxation` depends on the scene**: the safe value depends on $h/s$.

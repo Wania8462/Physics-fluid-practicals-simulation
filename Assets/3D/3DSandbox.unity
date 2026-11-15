@@ -391,8 +391,7 @@ MonoBehaviour:
     artificialPressure: 0.1
     cohesion: 100
     restDensity: 1
-    highViscosity: 0
-    lowViscosity: 1
+    viscosity: 1
     boundaryFriction: 1
     bodyFriction: 1
     bodies:
@@ -434,7 +433,7 @@ MonoBehaviour:
       scale: 0
   targetFrameRate: 400
   useRealDeltaTime: 0
-  fakeFramerate: 30
+  fakeFramerate: 60
   forceSmoothingTime: 0.25
   wetDistance: 1.5
   maxThrowSpeed: 300

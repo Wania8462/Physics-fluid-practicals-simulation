@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Unity.Collections;
 using Unity.Mathematics;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -14,8 +12,6 @@ public static class ComputeHelper
     private const int CommandCount = 1;
     /// <summary>Suffix of the read-only views of a buffer in the compute shaders, e.g. PositionsRO</summary>
     private const string ReadOnlySuffix = "RO";
-
-    private static readonly string[] BufferTypes = { "RWStructuredBuffer<", "StructuredBuffer<", "RWBuffer<", "Buffer<" };
 
     #region Creating
     /// <summary>Buffer of count zeroed elements. Never empty, since Unity can't make an empty buffer</summary>
@@ -89,22 +85,15 @@ public static class ComputeHelper
     #endregion
 
     #region Binding
-    /// <summary>Binds every buffer to every kernel. Each must be declared in the shader</summary>
+    /// <summary>Binds every buffer to every kernel, also as its read-only view, e.g. PositionsRO. Names a kernel doesn't use are ignored</summary>
     public static void SetBuffers(this ComputeShader compute, IEnumerable<int> kernels, IReadOnlyDictionary<string, ComputeBuffer> buffers)
     {
         foreach (int kernel in kernels)
             foreach (var buffer in buffers)
+            {
                 compute.SetBuffer(kernel, buffer.Key, buffer.Value);
-    }
-
-    /// <summary>Points each read-only view (a name ending in RO) at the buffer it views</summary>
-    public static void LinkReadOnlyViews(Dictionary<string, ComputeBuffer> buffers)
-    {
-        foreach (string name in buffers.Keys.Where(name => name.EndsWith(ReadOnlySuffix)).ToList())
-        {
-            if (buffers.TryGetValue(name[..^ReadOnlySuffix.Length], out ComputeBuffer viewed))
-                buffers[name] = viewed;
-        }
+                compute.SetBuffer(kernel, buffer.Key + ReadOnlySuffix, buffer.Value);
+            }
     }
     #endregion
 
@@ -147,33 +136,5 @@ public static class ComputeHelper
     /// <summary>Size of T in bytes</summary>
     public static int GetStride<T>()
         => System.Runtime.InteropServices.Marshal.SizeOf(typeof(T));
-    #endregion
-
-    // Editor only
-    #region Shader reflection
-    /// <summary>Kernel ids by name, read from the #pragma kernel lines</summary>
-    public static Dictionary<string, int> GetKernels(ComputeShader compute)
-    {
-        string[] lines = ReadSource(compute).Where(l => l.Contains("#pragma kernel")).ToArray();
-        Dictionary<string, int> result = new();
-
-        for (int i = 0; i < lines.Length; i++)
-            result.Add(lines[i].Split(' ').Last().Trim(), i);
-
-        return result;
-    }
-
-    /// <summary>Every buffer the shader declares, by name, set to null for the caller to fill</summary>
-    public static Dictionary<string, ComputeBuffer> GetBuffers(ComputeShader compute)
-    {
-        Dictionary<string, ComputeBuffer> result = new();
-
-        foreach (string line in ReadSource(compute).Where(line => BufferTypes.Any(type => line.Contains(type))))
-            result.Add(line.Split(' ').Last()[..^1], null);
-
-        return result;
-    }
-
-    private static string[] ReadSource(ComputeShader compute) => File.ReadAllText(AssetDatabase.GetAssetPath(compute)).Split('\n');
     #endregion
 }

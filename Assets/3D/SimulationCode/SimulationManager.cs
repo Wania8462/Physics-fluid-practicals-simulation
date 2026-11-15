@@ -5,6 +5,7 @@ using TMPro;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Serialization;
 
 /// <summary>Simulation settings shown in the inspector</summary>
 [Serializable]
@@ -29,8 +30,9 @@ public struct SimulationSettings3D
     public float restDensity;
 
     [Header("Viscosity")]
-    public float highViscosity;
-    public float lowViscosity;
+    [Tooltip("XSPH viscosity: how fast each particle's velocity evens out with its neighbours', per sim second. 0 turns it off")]
+    [FormerlySerializedAs("lowViscosity")]
+    public float viscosity;
 
     [Header("Rigid bodies")]
     public float boundaryFriction;
@@ -91,7 +93,8 @@ public class SimulationManager : MonoBehaviour
     /// <summary>Sim seconds one step advances</summary>
     private float StepTime => useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
 
-    private Dictionary<string, int> KernelIDs;
+    /// <summary>Kernel ids by name, found the first time each kernel is used</summary>
+    private readonly Dictionary<string, int> kernelIDs = new();
     /// <summary>Every GPU buffer, by its name in Simulation.compute</summary>
     public Dictionary<string, ComputeBuffer> Buffers = new();
 
@@ -189,7 +192,7 @@ public class SimulationManager : MonoBehaviour
             if (body < 0) continue;
 
             compute.SetInt("submergedBody", body);
-            compute.Dispatch(KernelIDs["MeasureSubmergedBody"], 1, 1, 1);
+            compute.Dispatch(Kernel("MeasureSubmergedBody"), 1, 1, 1);
         }
 
         submergedWanted.Clear();
@@ -202,7 +205,7 @@ public class SimulationManager : MonoBehaviour
         Watcher.ExecuteWithTimer("1. Time step", SimulationStep);
     }
 
-    /// <summary>One step: forces and viscosity, the PBF solver with the bodies, then body contacts</summary>
+    /// <summary>One step: gravity, the PBF solver with the bodies, body contacts, then viscosity and cohesion</summary>
     private void SimulationStep()
     {
         float dt = StepTime;
@@ -211,18 +214,13 @@ public class SimulationManager : MonoBehaviour
 
         StepStarting?.Invoke(dt);
 
-        compute.Dispatch(KernelIDs["ExternalForces"], threadGroups);
-
-        compute.Dispatch(KernelIDs["ClearForceBuffers"], threadGroups);
-        compute.Dispatch(KernelIDs["ApplyViscosity"], threadGroups);
-        compute.Dispatch(KernelIDs["ApplyForceBuffersToVelocities"], threadGroups);
-
-        compute.Dispatch(KernelIDs["AdvancePredictedPositions"], threadGroups);
+        compute.Dispatch(Kernel("ExternalForces"), threadGroups);
+        compute.Dispatch(Kernel("AdvancePredictedPositions"), threadGroups);
 
         if (numBodies > 0)
         {
             DispatchPerBody("BodyAdvancePredictedStates");
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
         }
 
         BuildGrid();
@@ -231,20 +229,20 @@ public class SimulationManager : MonoBehaviour
 
         for (int i = 0; i < settings.solverIterations; i++)
         {
-            compute.Dispatch(KernelIDs["CalculateLambdas"], threadGroups);
+            compute.Dispatch(Kernel("CalculateLambdas"), threadGroups);
 
             if (numBodies > 0)
-                compute.Dispatch(KernelIDs["ClearBoundaryForceBuffers"], boundaryThreadGroups);
+                compute.Dispatch(Kernel("ClearBoundaryForceBuffers"), boundaryThreadGroups);
 
-            compute.Dispatch(KernelIDs["CalculateDeltaPositions"], threadGroups);
-            compute.Dispatch(KernelIDs["ApplyDeltaPositions"], threadGroups);
-            compute.Dispatch(KernelIDs["ResolveBoundaries"], threadGroups);
+            compute.Dispatch(Kernel("CalculateDeltaPositions"), threadGroups);
+            compute.Dispatch(Kernel("ApplyDeltaPositions"), threadGroups);
+            compute.Dispatch(Kernel("ResolveBoundaries"), threadGroups);
 
             if (numBodies > 0)
             {
                 DispatchPerBody("SumCouplingForces");
                 DispatchPerBody("ApplyCouplingForces");
-                compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+                compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
             }
         }
 
@@ -253,56 +251,58 @@ public class SimulationManager : MonoBehaviour
             DispatchPerBody("SumContacts");
             DispatchPerBody("ApplyContacts");
             DispatchPerBody("BodyCalculateVelocity");
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
-            compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
+            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
+            compute.Dispatch(Kernel("ResolveBodyCollisions"), threadGroups);
 
             // Same smoothing speed whatever the frame rate
             compute.SetFloat("forceSmoothing", FluidMath3D.SmoothingBlend(dt, forceSmoothingTime));
             DispatchPerBody("SmoothBodyForces");
         }
 
-        compute.Dispatch(KernelIDs["ResolveBoundaries"], threadGroups);
+        compute.Dispatch(Kernel("ResolveBoundaries"), threadGroups);
 
-        compute.Dispatch(KernelIDs["CalculateVelocity"], threadGroups);
+        compute.Dispatch(Kernel("CalculateVelocity"), threadGroups);
+        compute.Dispatch(Kernel("ViscosityAndCohesion"), threadGroups);
+        compute.Dispatch(Kernel("ApplySmoothedVelocities"), threadGroups);
     }
 
     /// <summary>Reorders the particles by grid cell, so neighbours are close in memory</summary>
     private void BuildGrid()
     {
-        compute.Dispatch(KernelIDs["ClearGrid"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["CountParticles"], threadGroups);
+        compute.Dispatch(Kernel("ClearGrid"), gridThreadGroups);
+        compute.Dispatch(Kernel("CountParticles"), threadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(KernelIDs["ScanStep"], gridThreadGroups);
+            compute.Dispatch(Kernel("ScanStep"), gridThreadGroups);
         }
 
-        compute.Dispatch(KernelIDs["ResetCursor"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["Scatter"], threadGroups);
-        compute.Dispatch(KernelIDs["CopySortedParticles"], threadGroups);
+        compute.Dispatch(Kernel("ResetCursor"), gridThreadGroups);
+        compute.Dispatch(Kernel("Scatter"), threadGroups);
+        compute.Dispatch(Kernel("CopySortedParticles"), threadGroups);
     }
 
     /// <summary>Sorts the boundary particles into grid cells</summary>
     private void BuildBoundaryGrid()
     {
-        compute.Dispatch(KernelIDs["ClearBoundaryGrid"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["CountBoundaryParticles"], boundaryThreadGroups);
+        compute.Dispatch(Kernel("ClearBoundaryGrid"), gridThreadGroups);
+        compute.Dispatch(Kernel("CountBoundaryParticles"), boundaryThreadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(KernelIDs["BoundaryScanStep"], gridThreadGroups);
+            compute.Dispatch(Kernel("BoundaryScanStep"), gridThreadGroups);
         }
 
-        compute.Dispatch(KernelIDs["ResetBoundaryCursor"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["ScatterBoundary"], boundaryThreadGroups);
+        compute.Dispatch(Kernel("ResetBoundaryCursor"), gridThreadGroups);
+        compute.Dispatch(Kernel("ScatterBoundary"), boundaryThreadGroups);
     }
 
     /// <summary>Runs a body kernel with one thread group per body</summary>
-    private void DispatchPerBody(string kernel) => compute.Dispatch(KernelIDs[kernel], numBodies, 1, 1);
+    private void DispatchPerBody(string kernel) => compute.Dispatch(Kernel(kernel), numBodies, 1, 1);
 
     private void OnValidate()
     {
@@ -321,8 +321,7 @@ public class SimulationManager : MonoBehaviour
     {
         ReleaseBuffers();
 
-        KernelIDs = ComputeHelper.GetKernels(compute);
-        Buffers = ComputeHelper.GetBuffers(compute);
+        Buffers = new();
 
         Application.targetFrameRate = targetFrameRate;
 
@@ -344,7 +343,7 @@ public class SimulationManager : MonoBehaviour
         SetComputeSettings();
 
         threadGroups = compute.GetThreadGroups(0, numParticles);
-        gridThreadGroups = compute.GetThreadGroups(KernelIDs["ClearGrid"], SP.NumCells + 1);
+        gridThreadGroups = compute.GetThreadGroups(Kernel("ClearGrid"), SP.NumCells + 1);
         boundaryThreadGroups = compute.GetThreadGroups(0, numBoundaryParticles);
 
         // Number of passes needed to build the grid, rounded up to even
@@ -358,7 +357,7 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             BuildBoundaryGrid();
-            compute.Dispatch(KernelIDs["CalculateBoundaryVolumes"], boundaryThreadGroups);
+            compute.Dispatch(Kernel("CalculateBoundaryVolumes"), boundaryThreadGroups);
         }
 
         BuffersChanged?.Invoke(this);
@@ -616,7 +615,6 @@ public class SimulationManager : MonoBehaviour
         // Old buffers are released next frame, since this frame's draws may still use them
         List<ComputeBuffer> previous = Buffers.Values.ToList();
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
-        ComputeHelper.LinkReadOnlyViews(Buffers);
         replacedBuffers.AddRange(previous.Except(Buffers.Values));
 
         numBodies = bodies.NumBodies;
@@ -628,12 +626,12 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             // Places the boundary particles where the bodies are now
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
             BuildBoundaryGrid();
-            compute.Dispatch(KernelIDs["CalculateBoundaryVolumes"], boundaryThreadGroups);
+            compute.Dispatch(Kernel("CalculateBoundaryVolumes"), boundaryThreadGroups);
 
             // Pushes fluid out of any new body
-            compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
+            compute.Dispatch(Kernel("ResolveBodyCollisions"), threadGroups);
         }
     }
 
@@ -663,8 +661,7 @@ public class SimulationManager : MonoBehaviour
         compute.SetFloat("cohesionFactor", FluidMath3D.CohesionFactor(h));
         compute.SetFloat("wetDistanceSq", math.square(wetDistance * spawn.Spacing));
 
-        compute.SetFloat("highViscosity", settings.highViscosity);
-        compute.SetFloat("lowViscosity", settings.lowViscosity);
+        compute.SetFloat("viscosity", settings.viscosity);
 
         if (numBodies > 0)
         {
@@ -699,8 +696,19 @@ public class SimulationManager : MonoBehaviour
         compute.SetInt("layers", SP.layers);
     }
 
-    /// <summary>Binds every buffer to every kernel</summary>
-    private void SetBuffers() => compute.SetBuffers(KernelIDs.Values, Buffers);
+    /// <summary>Binds every buffer to every kernel used so far. The rest get them when first used</summary>
+    private void SetBuffers() => compute.SetBuffers(kernelIDs.Values, Buffers);
+
+    /// <summary>A kernel's id. Binds every buffer to it the first time</summary>
+    private int Kernel(string name)
+    {
+        if (kernelIDs.TryGetValue(name, out int id)) return id;
+
+        id = compute.FindKernel(name);
+        kernelIDs[name] = id;
+        compute.SetBuffers(new[] { id }, Buffers);
+        return id;
+    }
 
     /// <summary>Creates every GPU buffer for the fluid and the bodies</summary>
     private void CreateBuffers(float4[] positions)
@@ -714,10 +722,8 @@ public class SimulationManager : MonoBehaviour
 
         Buffers["Positions"] = ComputeHelper.CreateBuffer(positions);
         Buffers["PrevPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
-        Buffers["ForceBuffersX"] = ComputeHelper.CreateBuffer<int>(numParticles);
-        Buffers["ForceBuffersY"] = ComputeHelper.CreateBuffer<int>(numParticles);
-        Buffers["ForceBuffersZ"] = ComputeHelper.CreateBuffer<int>(numParticles);
         Buffers["Velocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SmoothedVelocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
         Buffers["Densities"] = ComputeHelper.CreateBuffer<float>(numParticles);
         Buffers["Lambdas"] = ComputeHelper.CreateBuffer<float>(numParticles);
@@ -731,15 +737,11 @@ public class SimulationManager : MonoBehaviour
         Buffers["SortedVelocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
-
-        // The read-only views in Simulation.compute, such as PositionsRO
-        ComputeHelper.LinkReadOnlyViews(Buffers);
     }
 
     /// <summary>Releases every GPU buffer</summary>
     private void ReleaseBuffers()
     {
-        // The read-only views share buffers, which this releases once
         ComputeHelper.Release(Buffers.Values.Concat(replacedBuffers));
 
         replacedBuffers.Clear();

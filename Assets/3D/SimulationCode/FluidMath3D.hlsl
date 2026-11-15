@@ -6,13 +6,10 @@ float Distance(float4 p1, float4 p2);
 float DistanceSq(float4 p1, float4 p2);
 float Pow3(float x);
 
-// Velocity change from viscosity between two particles
-float4 ViscosityImpulse(float deltaTime, float highViscosity, float lowViscosity, float relativeDistance, float inwardVelocity, float4 unitVector)
+// Velocity change that slows two particles closing in on each other. Used for boundary friction
+float4 ViscosityImpulse(float deltaTime, float strength, float relativeDistance, float inwardVelocity, float4 unitVector)
 {
-    return deltaTime *
-        (1.0 - relativeDistance) *
-        (highViscosity * inwardVelocity + (lowViscosity * inwardVelocity)) *
-        unitVector;
+    return deltaTime * (1.0 - relativeDistance) * strength * inwardVelocity * unitVector;
 }
 
 float4 UnitVector(float4 initialVector, float4 finalVector)
