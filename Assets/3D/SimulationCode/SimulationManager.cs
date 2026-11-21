@@ -5,6 +5,7 @@ using TMPro;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 using UnityEngine.Serialization;
 
 /// <summary>Simulation settings shown in the inspector</summary>
@@ -192,7 +193,7 @@ public class SimulationManager : MonoBehaviour
             if (body < 0) continue;
 
             compute.SetInt("submergedBody", body);
-            compute.Dispatch(Kernel("MeasureSubmergedBody"), 1, 1, 1);
+            Dispatch("MeasureSubmergedBody", new int3(1, 1, 1));
         }
 
         submergedWanted.Clear();
@@ -214,13 +215,13 @@ public class SimulationManager : MonoBehaviour
 
         StepStarting?.Invoke(dt);
 
-        compute.Dispatch(Kernel("ExternalForces"), threadGroups);
-        compute.Dispatch(Kernel("AdvancePredictedPositions"), threadGroups);
+        Dispatch("ExternalForces", threadGroups);
+        Dispatch("AdvancePredictedPositions", threadGroups);
 
         if (numBodies > 0)
         {
             DispatchPerBody("BodyAdvancePredictedStates");
-            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
         }
 
         BuildGrid();
@@ -229,20 +230,20 @@ public class SimulationManager : MonoBehaviour
 
         for (int i = 0; i < settings.solverIterations; i++)
         {
-            compute.Dispatch(Kernel("CalculateLambdas"), threadGroups);
+            Dispatch("CalculateLambdas", threadGroups);
 
             if (numBodies > 0)
-                compute.Dispatch(Kernel("ClearBoundaryForceBuffers"), boundaryThreadGroups);
+                Dispatch("ClearBoundaryForceBuffers", boundaryThreadGroups);
 
-            compute.Dispatch(Kernel("CalculateDeltaPositions"), threadGroups);
-            compute.Dispatch(Kernel("ApplyDeltaPositions"), threadGroups);
-            compute.Dispatch(Kernel("ResolveBoundaries"), threadGroups);
+            Dispatch("CalculateDeltaPositions", threadGroups);
+            Dispatch("ApplyDeltaPositions", threadGroups);
+            Dispatch("ResolveBoundaries", threadGroups);
 
             if (numBodies > 0)
             {
                 DispatchPerBody("SumCouplingForces");
                 DispatchPerBody("ApplyCouplingForces");
-                compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
+                Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
             }
         }
 
@@ -251,58 +252,78 @@ public class SimulationManager : MonoBehaviour
             DispatchPerBody("SumContacts");
             DispatchPerBody("ApplyContacts");
             DispatchPerBody("BodyCalculateVelocity");
-            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
-            compute.Dispatch(Kernel("ResolveBodyCollisions"), threadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
+            Dispatch("ResolveBodyCollisions", threadGroups);
 
             // Same smoothing speed whatever the frame rate
             compute.SetFloat("forceSmoothing", FluidMath3D.SmoothingBlend(dt, forceSmoothingTime));
             DispatchPerBody("SmoothBodyForces");
         }
 
-        compute.Dispatch(Kernel("ResolveBoundaries"), threadGroups);
+        Dispatch("ResolveBoundaries", threadGroups);
 
-        compute.Dispatch(Kernel("CalculateVelocity"), threadGroups);
-        compute.Dispatch(Kernel("ViscosityAndCohesion"), threadGroups);
-        compute.Dispatch(Kernel("ApplySmoothedVelocities"), threadGroups);
+        Dispatch("CalculateVelocity", threadGroups);
+        Dispatch("ViscosityAndCohesion", threadGroups);
+        Dispatch("ApplySmoothedVelocities", threadGroups);
     }
 
     /// <summary>Reorders the particles by grid cell, so neighbours are close in memory</summary>
     private void BuildGrid()
     {
-        compute.Dispatch(Kernel("ClearGrid"), gridThreadGroups);
-        compute.Dispatch(Kernel("CountParticles"), threadGroups);
+        Dispatch("ClearGrid", gridThreadGroups);
+        Dispatch("CountParticles", threadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(Kernel("ScanStep"), gridThreadGroups);
+            Dispatch("ScanStep", gridThreadGroups);
         }
 
-        compute.Dispatch(Kernel("ResetCursor"), gridThreadGroups);
-        compute.Dispatch(Kernel("Scatter"), threadGroups);
-        compute.Dispatch(Kernel("CopySortedParticles"), threadGroups);
+        Dispatch("ResetCursor", gridThreadGroups);
+        Dispatch("Scatter", threadGroups);
+        Dispatch("CopySortedParticles", threadGroups);
     }
 
     /// <summary>Sorts the boundary particles into grid cells</summary>
     private void BuildBoundaryGrid()
     {
-        compute.Dispatch(Kernel("ClearBoundaryGrid"), gridThreadGroups);
-        compute.Dispatch(Kernel("CountBoundaryParticles"), boundaryThreadGroups);
+        Dispatch("ClearBoundaryGrid", gridThreadGroups);
+        Dispatch("CountBoundaryParticles", boundaryThreadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(Kernel("BoundaryScanStep"), gridThreadGroups);
+            Dispatch("BoundaryScanStep", gridThreadGroups);
         }
 
-        compute.Dispatch(Kernel("ResetBoundaryCursor"), gridThreadGroups);
-        compute.Dispatch(Kernel("ScatterBoundary"), boundaryThreadGroups);
+        Dispatch("ResetBoundaryCursor", gridThreadGroups);
+        Dispatch("ScatterBoundary", boundaryThreadGroups);
     }
 
     /// <summary>Runs a body kernel with one thread group per body</summary>
-    private void DispatchPerBody(string kernel) => compute.Dispatch(Kernel(kernel), numBodies, 1, 1);
+    private void DispatchPerBody(string kernel) => Dispatch(kernel, new int3(numBodies, 1, 1));
+
+    private CommandBuffer markerBuffer;
+
+    /// <summary>Runs a kernel. In the editor and development builds it's labelled for GPU profilers like Nsight or PIX</summary>
+    private void Dispatch(string kernel, int3 groups)
+    {
+        if (!Debug.isDebugBuild)
+        {
+            compute.Dispatch(Kernel(kernel), groups);
+            return;
+        }
+
+        // Profilers label it with the buffer's name. Runs straight away, so it sees the same shader settings as a plain
+        // dispatch would
+        markerBuffer ??= new CommandBuffer();
+        markerBuffer.Clear();
+        markerBuffer.name = kernel;
+        markerBuffer.DispatchCompute(compute, Kernel(kernel), groups.x, groups.y, groups.z);
+        Graphics.ExecuteCommandBuffer(markerBuffer);
+    }
 
     private void OnValidate()
     {
@@ -318,11 +339,12 @@ public class SimulationManager : MonoBehaviour
 
     /// <summary>Builds the particles, bodies and buffers from scratch. Also runs when R is pressed</summary>
     private void Setup()
-    {
+    {        
         ReleaseBuffers();
 
         Buffers = new();
 
+        QualitySettings.maxQueuedFrames = 2;
         Application.targetFrameRate = targetFrameRate;
 
         Tank tank = Tank;
@@ -357,7 +379,7 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             BuildBoundaryGrid();
-            compute.Dispatch(Kernel("CalculateBoundaryVolumes"), boundaryThreadGroups);
+            Dispatch("CalculateBoundaryVolumes", boundaryThreadGroups);
         }
 
         BuffersChanged?.Invoke(this);
@@ -626,12 +648,12 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             // Places the boundary particles where the bodies are now
-            compute.Dispatch(Kernel("PlaceBoundaryParticles"), boundaryThreadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
             BuildBoundaryGrid();
-            compute.Dispatch(Kernel("CalculateBoundaryVolumes"), boundaryThreadGroups);
+            Dispatch("CalculateBoundaryVolumes", boundaryThreadGroups);
 
             // Pushes fluid out of any new body
-            compute.Dispatch(Kernel("ResolveBodyCollisions"), threadGroups);
+            Dispatch("ResolveBodyCollisions", threadGroups);
         }
     }
 
@@ -750,6 +772,7 @@ public class SimulationManager : MonoBehaviour
     private void OnDestroy()
     {
         ReleaseBuffers();
+        markerBuffer?.Release();
     }
 
 #if UNITY_EDITOR
