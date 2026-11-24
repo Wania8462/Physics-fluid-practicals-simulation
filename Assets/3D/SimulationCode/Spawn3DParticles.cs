@@ -30,6 +30,8 @@ public class Spawn3DParticles : MonoBehaviour
     [Tooltip("Size of the box filled with particles, one per spacing³ cell")]
     [SerializeField] private float3 particleBoxSize = new(40, 40, 40);
     [SerializeField] private float spacing = 2;
+    [Tooltip("Particles kept, filling the box from the bottom layer up. -1 keeps every particle that fits")]
+    [SerializeField] private int maxParticles = -1;
     [SerializeField] private bool useJitter = true;
     [SerializeField] private float jitterStrength = 0.2f;
     [Tooltip("Space between the particle box and each tank wall")]
@@ -39,11 +41,37 @@ public class Spawn3DParticles : MonoBehaviour
     public float Spacing => spacing;
 
     /// <summary>Height of the top of the fluid as spawned</summary>
-    public float SurfaceHeight => center.y + ParticlesPerAxis.y * spacing / 2;
+    public float SurfaceHeight => center.y + (2 * FilledLayers - ParticlesPerAxis.y) * spacing / 2;
+
+    /// <summary>Layers the particle cap leaves, counting a partly filled top layer</summary>
+    private int FilledLayers => maxParticles < 0
+        ? ParticlesPerAxis.y
+        : Mathf.Min(ParticlesPerAxis.y, Mathf.CeilToInt((float)maxParticles / (ParticlesPerAxis.x * ParticlesPerAxis.z)));
 
     private int3 ParticlesPerAxis => math.max(1, (int3)math.floor(particleBoxSize / spacing));
 
     public int GetNumberOfParticles() => ParticlesPerAxis.x * ParticlesPerAxis.y * ParticlesPerAxis.z;
+
+    /// <summary>Spawns exactly count particles, in the smallest cube that holds them. The tank grows with it</summary>
+    public void SetParticleCount(int count)
+    {
+        // The small offset stops float error rounding an exact cube up a size
+        int perAxis = Mathf.Max(1, Mathf.CeilToInt(Mathf.Pow(count, 1f / 3) - 0.001f));
+        // Half a spacing extra, so float rounding can't drop a row
+        particleBoxSize = (perAxis + 0.5f) * spacing;
+        maxParticles = count;
+    }
+
+    /// <summary>The first maxParticles positions, or all of them when it's -1</summary>
+    public float4[] ApplyMaxParticles(float4[] positions)
+    {
+        if (maxParticles < 0) return positions;
+
+        if (positions.Length < maxParticles)
+            Debug.LogWarning($"Spawn particles: only {positions.Length} of the {maxParticles} max particles fit, make the particle box bigger");
+
+        return positions.Length > maxParticles ? positions[..maxParticles] : positions;
+    }
 
     /// <summary>A grid of fluid particles filling the spawn box, slightly jittered</summary>
     public float4[] InitializePositions()
@@ -57,14 +85,15 @@ public class Spawn3DParticles : MonoBehaviour
         float jitter = useJitter ? jitterStrength : 0;
         float3 start = center - (float3)(n - 1) * spacing / 2;
 
-        for (int i = 0; i < n.x; i++)
+        // Bottom layer first, so a particle cap leaves a flat surface
+        for (int j = 0; j < n.y; j++)
         {
-            for (int j = 0; j < n.y; j++)
+            for (int i = 0; i < n.x; i++)
             {
                 for (int k = 0; k < n.z; k++)
                 {
                     float3 jitterOffset = UnityEngine.Random.insideUnitSphere * jitter;
-                    pos[(i * n.y + j) * n.z + k] = new float4(start + new float3(i, j, k) * spacing + jitterOffset, 0);
+                    pos[(j * n.x + i) * n.z + k] = new float4(start + new float3(i, j, k) * spacing + jitterOffset, 0);
                 }
             }
         }

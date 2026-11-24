@@ -337,7 +337,8 @@ public static class RigidBodies3D
         buffers["BoundaryForceBuffersY"] = ComputeHelper.CreateBuffer<int>(boundaryCount);
         buffers["BoundaryForceBuffersZ"] = ComputeHelper.CreateBuffer<int>(boundaryCount);
         buffers["BoundaryBodyIndices"] = ComputeHelper.CreateBuffer(data.boundaryBodyIndices);
-        buffers["BoundaryCellStart"] = ComputeHelper.CreateBuffer<uint>(numCells + 1);
+        // Only read when there are bodies, so it stays one element until then
+        buffers["BoundaryCellStart"] = ComputeHelper.CreateBuffer<uint>(data.NumBodies > 0 ? numCells + 1 : 1);
         buffers["BoundarySortedIndices"] = ComputeHelper.CreateBuffer<uint>(boundaryCount);
         buffers["BoundaryWet"] = ComputeHelper.CreateBuffer<uint>(boundaryCount);
 

@@ -21,7 +21,9 @@ public class ParticleRenerer : MonoBehaviour
 
     private Mesh mesh;
 
+    /// <summary>Made on the first draw, so screen-space mode never allocates it</summary>
     private ComputeBuffer colorsBuffer;
+    private int numParticles;
     private GraphicsBuffer commandBuf;
     private RenderParams rp;
 
@@ -45,18 +47,25 @@ public class ParticleRenerer : MonoBehaviour
         compute.SetBuffer(CalculateColorsKernelID, "Velocities", sim.Buffers["Velocities"]);
         compute.SetInt("numParticles", sim.numParticles);
 
+        numParticles = sim.numParticles;
         ComputeHelper.Release(colorsBuffer);
-        colorsBuffer = ComputeHelper.CreateBuffer(GetDefaultColors(sim.numParticles));
-        compute.SetBuffer(CalculateColorsKernelID, "Colors", colorsBuffer);
+        colorsBuffer = null;
         compute.SetBool("solidBlue", color == ParticleColor3D.SolidBlue);
         compute.SetBool("blueToRed", color == ParticleColor3D.BlueToRed);
         compute.SetBool("blueToWhite", color == ParticleColor3D.BlueToWhite);
         compute.SetFloat("maxSpeed", maxSpeed);
 
         rp.matProps.SetBuffer("Positions", sim.Buffers["Positions"]);
-        rp.matProps.SetBuffer("Colors", colorsBuffer);
 
         SetupBoundaryParticles(sim);
+    }
+
+    /// <summary>Per-particle colours, which only drawing the particles needs</summary>
+    private void CreateColorsBuffer()
+    {
+        colorsBuffer = ComputeHelper.CreateBuffer(GetDefaultColors(numParticles));
+        compute.SetBuffer(CalculateColorsKernelID, "Colors", colorsBuffer);
+        rp.matProps.SetBuffer("Colors", colorsBuffer);
     }
 
     private void SetupBoundaryParticles(SimulationManager sim)
@@ -82,6 +91,9 @@ public class ParticleRenerer : MonoBehaviour
     /// <summary>Colours the particles and draws them</summary>
     public void DrawParticles()
     {
+        if (colorsBuffer == null)
+            CreateColorsBuffer();
+
         compute.Dispatch(CalculateColorsKernelID, threadGroups);
         Graphics.RenderMeshIndirect(rp, mesh, commandBuf, commandCount: 1);
     }

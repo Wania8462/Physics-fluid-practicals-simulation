@@ -338,8 +338,8 @@ public class SimulationManager : MonoBehaviour
     }
 
     /// <summary>Builds the particles, bodies and buffers from scratch. Also runs when R is pressed</summary>
-    private void Setup()
-    {        
+    internal void Setup()
+    {
         ReleaseBuffers();
 
         Buffers = new();
@@ -354,8 +354,9 @@ public class SimulationManager : MonoBehaviour
         numBodies = bodies.NumBodies;
         numBoundaryParticles = bodies.NumBoundaryParticles;
 
-        // Removes fluid spawned inside or too close to a body
-        float4[] positions = RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f);
+        // Removes fluid spawned inside or too close to a body, then caps the count so it's exact
+        float4[] positions = spawn.ApplyMaxParticles(
+            RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f));
         numParticles = positions.Length;
         Debug.Log($"Simulation manager: {numParticles} particles");
 

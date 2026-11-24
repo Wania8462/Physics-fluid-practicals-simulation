@@ -109,10 +109,11 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         thicknessDisplayScale = 100
     };
 
-    /// <summary>One command buffer per pass, run in this order, so GPU profilers time each one separately</summary>
+    /// <summary>Profiler sample per pass, run in this order, so GPU profilers time each one separately</summary>
     private static readonly string[] PassNames = { "SSF Depth", "SSF Thickness", "SSF Smooth depth", "SSF Smooth thickness", "SSF Composite" };
 
-    private CommandBuffer[] passes;
+    /// <summary>One buffer for every pass, since the temporary textures must be allocated in the buffer that uses them</summary>
+    private CommandBuffer cmd;
     private Material particleMaterial;
     private Material smoothMaterial;
     private Material compositeMaterial;
@@ -176,7 +177,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         compositeMaterial.SetFloat(ThicknessDisplayScaleId, settings.thicknessDisplayScale);
 
         // Depth of the nearest fluid surface at each pixel
-        CommandBuffer cmd = StartPass(0);
+        StartPass(0);
         cmd.GetTemporaryRT(FluidDepthTexId, -1, -1, 24, FilterMode.Point, RenderTextureFormat.RGFloat);
         cmd.SetRenderTarget(FluidDepthTexId);
         cmd.ClearRenderTarget(true, true, NoDepthColor);
@@ -184,7 +185,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, depthPass, MeshTopology.Triangles, 6, numParticles);
 
         // How much fluid each pixel looks through, at half resolution to save time
-        cmd = StartPass(1);
+        StartPass(1);
         cmd.GetTemporaryRT(FluidThicknessTexId, -2, -2, 24, FilterMode.Bilinear, RenderTextureFormat.RHalf);
         cmd.SetRenderTarget(FluidThicknessTexId);
         cmd.ClearRenderTarget(true, true, Color.clear);
@@ -192,7 +193,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, thicknessPass, MeshTopology.Triangles, 6, numParticles);
 
         // Smooth the depth so the particles blend into one surface
-        cmd = StartPass(2);
+        StartPass(2);
         cmd.GetTemporaryRT(FluidDepthTempId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.RGFloat);
         for (int i = 0; i < settings.smoothingIterations; i++)
         {
@@ -201,7 +202,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         }
         cmd.ReleaseTemporaryRT(FluidDepthTempId);
 
-        cmd = StartPass(3);
+        StartPass(3);
         if (settings.debugView != DebugView.Thickness)
         {
             cmd.GetTemporaryRT(FluidThicknessTempId, -2, -2, 0, FilterMode.Bilinear, RenderTextureFormat.RHalf);
@@ -211,7 +212,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         }
 
         // Shade the fluid over a copy of the scene
-        cmd = StartPass(4);
+        StartPass(4);
         cmd.GetTemporaryRT(FluidSceneTexId, -1, -1, 0, FilterMode.Bilinear, RenderTextureFormat.DefaultHDR);
         cmd.Blit(BuiltinRenderTextureType.CameraTarget, FluidSceneTexId);
         cmd.Blit(FluidSceneTexId, BuiltinRenderTextureType.CameraTarget, compositeMaterial, compositePass);
@@ -219,13 +220,18 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         cmd.ReleaseTemporaryRT(FluidDepthTexId);
         cmd.ReleaseTemporaryRT(FluidThicknessTexId);
         cmd.ReleaseTemporaryRT(FluidSceneTexId);
+        cmd.EndSample(PassNames[^1]);
     }
 
-    /// <summary>Empties a pass's command buffer for this frame's commands</summary>
-    private CommandBuffer StartPass(int pass)
+    /// <summary>Starts a pass's profiler sample, emptying the buffer first for the first pass</summary>
+    private void StartPass(int pass)
     {
-        passes[pass].Clear();
-        return passes[pass];
+        if (pass == 0)
+            cmd.Clear();
+        else
+            cmd.EndSample(PassNames[pass - 1]);
+
+        cmd.BeginSample(PassNames[pass]);
     }
 
     /// <summary>Writes the depth of everything that hides fluid behind it</summary>
@@ -260,22 +266,18 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
     private void OnEnable()
     {
-        passes = Array.ConvertAll(PassNames, name => new CommandBuffer { name = name });
+        cmd = new CommandBuffer { name = "SSF" };
         if (cam != null)
-            foreach (CommandBuffer pass in passes)
-                cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, pass);
+            cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, cmd);
         Camera.onPreRender += SetCameraGlobals;
     }
 
     private void OnDisable()
     {
         Camera.onPreRender -= SetCameraGlobals;
-        foreach (CommandBuffer pass in passes)
-        {
-            if (cam != null)
-                cam.RemoveCommandBuffer(CameraEvent.AfterForwardAlpha, pass);
-            pass.Release();
-        }
+        if (cam != null)
+            cam.RemoveCommandBuffer(CameraEvent.AfterForwardAlpha, cmd);
+        cmd.Release();
     }
 
     private void OnDestroy()

@@ -391,8 +391,7 @@ MonoBehaviour:
     artificialPressure: 0.1
     cohesion: 100
     restDensity: 1
-    highViscosity: 0
-    lowViscosity: 1
+    viscosity: 1
     boundaryFriction: 1
     bodyFriction: 1
     bodies:
@@ -480,6 +479,7 @@ MonoBehaviour:
     y: 150
     z: 150
   spacing: 3
+  maxParticles: -1
   useJitter: 1
   jitterStrength: 0.2
   tankPadding:
@@ -496,6 +496,7 @@ GameObject:
   m_Component:
   - component: {fileID: 900000002}
   - component: {fileID: 900000003}
+  - component: {fileID: 900000004}
   m_Layer: 0
   m_Name: Benchmark
   m_TagString: Untagged
@@ -525,7 +526,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 900000001}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 02149514590b46c8b9f5d6b6e9ec24ca, type: 3}
   m_Name: 
@@ -533,6 +534,23 @@ MonoBehaviour:
   manager: {fileID: 642951339}
   warmupSeconds: 10
   recordSeconds: 20
+--- !u!114 &900000004
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 900000001}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6a46873099e3452e9cf60ab6bbc29726, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 3DSimulation::ParticleCountBenchmark
+  manager: {fileID: 642951339}
+  spawn: {fileID: 642951341}
+  particleCounts: 10270000a861000050c30000a086010090d0030020a1070040420f0080841e0000093d00
+  warmupFrames: 300
+  recordFrames: 500
 --- !u!1 &1755901141
 GameObject:
   m_ObjectHideFlags: 0
@@ -620,7 +638,7 @@ Transform:
   m_GameObject: {fileID: 1755901141}
   serializedVersion: 2
   m_LocalRotation: {x: 0.14690234, y: 0.024166951, z: -0.0035902155, w: 0.9888492}
-  m_LocalPosition: {x: -29.392078, y: 74.65933, z: -406.31546}
+  m_LocalPosition: {x: -28.5, y: 69.2, z: -387.7}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
