@@ -33,7 +33,7 @@ public class SimulationProbe : MonoBehaviour
         float maxCompression = 0;
         for (int i = 0; i < n; i++)
         {
-            float compression = Mathf.Max(densities[i] - 1, 0);
+            float compression = FluidMath3D.Compression(densities[i]);
             compressionSum += compression;
             maxCompression = Mathf.Max(maxCompression, compression);
             speedSqSum += ((Vector3)velocities[i]).sqrMagnitude;

@@ -14,18 +14,21 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/Compute 2D/GPU2D.unity
     guid: c95daadcf88b4db4499c81ee5c6cefb1
-  - enabled: 1
+  - enabled: 0
     path: Assets/FinalScenes/MainMenu.unity
     guid: ef0b0e5e25a3cee4ebebbc6def6bea86
-  - enabled: 1
+  - enabled: 0
     path: Assets/FinalScenes/BuoyancyPractical.unity
     guid: 5e543323c35d22a4c95aed15dd314303
-  - enabled: 1
+  - enabled: 0
     path: Assets/FinalScenes/WavesPractical.unity
     guid: 854c3b0a24e399247993965fda64aa81
-  - enabled: 1
+  - enabled: 0
     path: Assets/FinalScenes/SettingsScene.unity
     guid: 7c25e402373a0904bb20011e315036bf
+  - enabled: 1
+    path: Assets/3D/Benchmark.unity
+    guid: f74c8f869d5740f4ab2a52b5f6077c09
   m_configObjects:
     com.unity.input.settings: {fileID: 11400000, guid: fd5a681f047c14302a45a4f33825698c, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

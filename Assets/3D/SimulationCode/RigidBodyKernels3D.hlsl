@@ -30,7 +30,7 @@ float3 ReadBoundaryForceBuffer(uint index)
                   (float)BoundaryForceBuffersZ[index]) / FloatScale;
 }
 
-// ---------- Fluid-body coupling, called from CalculateLambdas, CalculateDeltaPositions and ApplyViscosity ----------
+// ---------- Fluid-body coupling, called from CalculateLambdas, CalculateDeltaPositions and ViscosityAndCohesion ----------
 
 // Adds the density that nearby rigid body surfaces give a fluid particle
 void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient)
@@ -87,9 +87,10 @@ void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, in
     }
 }
 
-// Slows fluid that moves into a rigid body
-void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 cellPosition)
+// Velocity change that slows fluid moving into a rigid body
+float4 BoundaryFriction(float4 position, float4 velocity, uint3 cellPosition)
 {
+    float4 friction = 0;
     for (uint i = 0; i < 27; i++)
     {
         int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
@@ -109,11 +110,12 @@ void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 c
             float inwardVelocity = dot(velocity - BoundaryVelocitiesRO[boundary], r);
 
             float w = step(1e-12, magSq) * step(q, 1.0) * step(0.0, inwardVelocity);
-            float4 impulse = ViscosityImpulse(dt, boundaryFriction, 0.0, q, inwardVelocity, r);
+            float4 impulse = ViscosityImpulse(dt, boundaryFriction, q, inwardVelocity, r);
 
-            AtomicAddForceBuffer(index, -w * impulse);
+            friction -= w * impulse;
         }
     }
+    return friction;
 }
 
 // ---------- Boundary grid: the same counting sort as the fluid grid ----------
@@ -560,7 +562,7 @@ bool HasFluidNear(float4 position)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            if (DistanceSq(position, PositionsRO[SortedIndicesRO[j]]) < wetDistanceSq)
+            if (DistanceSq(position, PositionsRO[j]) < wetDistanceSq)
                 return true;
         }
     }

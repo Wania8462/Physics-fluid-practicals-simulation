@@ -18,7 +18,7 @@ public class SimulationAPI : MonoBehaviour
     [SerializeField] private float lengthScale = 200;          // Sim units per metre
     [SerializeField] private float densityScale = 1f / 1000;   // restDensity per kg/m³
     [SerializeField] private float gravityScale = 20 / 9.81f;  // Sim gravity per m/s²
-    [SerializeField] private float viscosityScale = 1;         // lowViscosity per mPa·s
+    [SerializeField] private float viscosityScale = 1;         // viscosity per mPa·s
 
     /// <summary>Sim mass of 1 kg</summary>
     private float MassScale => densityScale * math.pow(lengthScale, 3);
@@ -84,13 +84,13 @@ public class SimulationAPI : MonoBehaviour
     /// <summary>Fluid viscosity in mPa·s</summary>
     public float GetViscosity()
     {
-        return manager.settings.lowViscosity / viscosityScale;
+        return manager.settings.viscosity / viscosityScale;
     }
 
     /// <summary>Sets the fluid viscosity in mPa·s</summary>
     public void SetViscosity(float viscosity)
     {
-        manager.settings.lowViscosity = viscosity * viscosityScale;
+        manager.settings.viscosity = viscosity * viscosityScale;
     }
 
     /// <summary>Spawns a body in front of the camera, inside the tank</summary>

@@ -81,12 +81,11 @@ public class WaveDipper : MonoBehaviour
     private void Move(float dt)
     {
         // The stroke has to fit the bar's height, and be slow enough for the water to follow it
-        float omega = 2 * math.PI * frequency;
-        float limit = math.min(halfHeight - clearance / 2, maxAcceleration * math.abs(manager.settings.gravity) / (omega * omega));
+        float limit = math.min(halfHeight - clearance / 2, FluidMath3D.AmplitudeForAcceleration(maxAcceleration * math.abs(manager.settings.gravity), frequency));
         float target = on ? math.min(targetAmplitude, limit) : 0;
         amplitude = Mathf.MoveTowards(amplitude, target, easeSpeed * dt);
         lift = Mathf.MoveTowards(lift, 0, easeSpeed * dt);
-        phase = (phase + 2 * math.PI * frequency * dt) % (2 * math.PI);
+        phase = FluidMath3D.AdvancePhase(phase, frequency, dt);
 
         // Sits deeper for a bigger stroke, so its bottom never comes out of the water
         float draft = clearance + amplitude;

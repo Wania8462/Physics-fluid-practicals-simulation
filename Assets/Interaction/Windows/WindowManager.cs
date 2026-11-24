@@ -125,6 +125,18 @@ public class WindowManager : MonoBehaviour
     private Plane dragPlane;
     private Vector3 dragOffset;
 
+    /// <summary>How many windows have been opened, which sets where the next one goes</summary>
+    private int windowsOpened;
+
+    private void Awake()
+    {
+        // The settings card is laid out like the settings screen, so it's drawn at the same scale
+        if (settingsCard)
+            UIStyler.MarkPage(settingsCard.transform, UITheme.Current.pageScale);
+        if (sideMenu)
+            UIStyler.MarkPage(sideMenu.transform, UITheme.Current.sideMenuScale);
+    }
+
     private void Update()
     {
         UpdateScales();
@@ -799,10 +811,22 @@ public class WindowManager : MonoBehaviour
             api.MoveBody(draggedBody, target);
     }
 
+    /// <summary>Where the next window opens: each one a step right and down from the last, starting over after a few</summary>
+    // ponytail: doesn't look at where windows are now, so a new one can cover an old one that was left in place
+    private Vector3 NextWindowPosition()
+    {
+        // As parts of the screen's width and height, for the middle of the title bar
+        Vector2 first = new(0.4f, 0.9f), step = new(0.035f, -0.05f);
+        const int Steps = 8;
+
+        int slot = windowsOpened++ % Steps;
+        return new Vector3((first.x + slot * step.x) * Screen.width, (first.y + slot * step.y) * Screen.height, 0);
+    }
+
     /// <summary>Opens a window with these fields</summary>
     private Window CreateWindow(string title, params Field[] fields)
     {
-        Window window = Instantiate(windowPrefab, new(1000, 500, 0), Quaternion.identity, canvas).GetComponent<Window>();
+        Window window = Instantiate(windowPrefab, NextWindowPosition(), Quaternion.identity, canvas).GetComponent<Window>();
         window.Title = title;
         window.fields.AddRange(fields);
         window.UpdateFields();

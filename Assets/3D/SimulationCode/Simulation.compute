@@ -1,18 +1,18 @@
 #pragma kernel ExternalForces
-#pragma kernel ClearForceBuffers
 #pragma kernel CalculateLambdas
 #pragma kernel CalculateDeltaPositions
 #pragma kernel ApplyDeltaPositions
-#pragma kernel ApplyForceBuffersToVelocities
-#pragma kernel ApplyViscosity
 #pragma kernel ResolveBoundaries
 #pragma kernel AdvancePredictedPositions
 #pragma kernel CalculateVelocity
+#pragma kernel ViscosityAndCohesion
+#pragma kernel ApplySmoothedVelocities
 #pragma kernel ClearGrid
 #pragma kernel CountParticles
 #pragma kernel ScanStep
 #pragma kernel ResetCursor
 #pragma kernel Scatter
+#pragma kernel CopySortedParticles
 #pragma kernel ClearBoundaryGrid
 #pragma kernel CountBoundaryParticles
 #pragma kernel BoundaryScanStep
@@ -39,21 +39,21 @@ static const int FloatScale = 1000000;
 
 RWStructuredBuffer<float4> Positions;
 RWStructuredBuffer<float4> PrevPositions;
-RWStructuredBuffer<int> ForceBuffersX;
-RWStructuredBuffer<int> ForceBuffersY;
-RWStructuredBuffer<int> ForceBuffersZ;
 RWStructuredBuffer<float4> Velocities;
+RWStructuredBuffer<float4> SmoothedVelocities;
 
 // Solver state per particle: how compressed it is, and how far it's being moved
 RWStructuredBuffer<float> Densities;
 RWStructuredBuffer<float> Lambdas;
 RWStructuredBuffer<float4> DeltaPositions;
 
-// Particles sorted by grid cell, for fast neighbour search
+// Particles are reordered by grid cell each step, so a cell's particles sit next to each other in memory
 RWStructuredBuffer<uint> CellStart;
 RWStructuredBuffer<uint> ScanTemp;
 RWStructuredBuffer<uint> CellCursor;
-RWStructuredBuffer<uint> SortedIndices;
+RWStructuredBuffer<float4> SortedPositions;
+RWStructuredBuffer<float4> SortedPrevPositions;
+RWStructuredBuffer<float4> SortedVelocities;
 
 // Boundary particles: points on the surface of every rigid body
 RWStructuredBuffer<float4> BoundaryPositions;
@@ -86,7 +86,6 @@ StructuredBuffer<float4> PositionsRO;
 StructuredBuffer<float4> VelocitiesRO;
 StructuredBuffer<float> LambdasRO;
 StructuredBuffer<uint> CellStartRO;
-StructuredBuffer<uint> SortedIndicesRO;
 StructuredBuffer<float4> BoundaryPositionsRO;
 StructuredBuffer<float4> BoundaryVelocitiesRO;
 StructuredBuffer<float> BoundaryVolumesRO;
@@ -111,8 +110,7 @@ const float spikyGradFactor;
 const float cohesion;
 const float cohesionFactor;
 
-const float highViscosity;
-const float lowViscosity;
+const float viscosity;
 
 const float collisionDamp;
 const float4 realHalfBoundSize;
@@ -137,34 +135,12 @@ const float forceSmoothing;
 const uint submergedBody;
 const float wetDistanceSq;
 
-void SetForceBuffer(uint index, float4 value)
-{
-    ForceBuffersX[index] = (int)(value.x * FloatScale);
-    ForceBuffersY[index] = (int)(value.y * FloatScale);
-    ForceBuffersZ[index] = (int)(value.z * FloatScale);
-}
-
-void AtomicAddForceBuffer(uint index, float4 value)
-{
-    InterlockedAdd(ForceBuffersX[index], (int)(value.x * FloatScale));
-    InterlockedAdd(ForceBuffersY[index], (int)(value.y * FloatScale));
-    InterlockedAdd(ForceBuffersZ[index], (int)(value.z * FloatScale));
-}
-
-float4 ReadForceBuffer(uint index)
-{
-    return float4((float)ForceBuffersX[index] / FloatScale,
-    (float)ForceBuffersY[index] / FloatScale,
-    (float)ForceBuffersZ[index] / FloatScale,
-    0);
-}
-
 uint3 GetCellPosition(float4 position);
 uint GetCellIndex(uint3 cellPosition);
 
 void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient);
 void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta);
-void ApplyBoundaryFriction(uint index, float4 position, float4 velocity, uint3 cellPosition);
+float4 BoundaryFriction(float4 position, float4 velocity, uint3 cellPosition);
 
 // Applies gravity
 [numthreads(64,1,1)]
@@ -173,14 +149,6 @@ void ExternalForces (uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles) return;
 
     Velocities[id.x].y += dt * gravity;
-}
-
-[numthreads(64,1,1)]
-void ClearForceBuffers (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= numParticles) return;
-
-    SetForceBuffer(id.x, ZeroImpulse);
 }
 
 // How close a particle is to each wall: 0 at the wall, 1 far from it
@@ -211,7 +179,7 @@ void CalculateLambdas (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            float4 neighbourPosition = PositionsRO[SortedIndicesRO[j]];
+            float4 neighbourPosition = PositionsRO[j];
             float magSq = DistanceSq(position, neighbourPosition);
             if (magSq >= interactionRadiusSq) continue;
 
@@ -263,7 +231,7 @@ void CalculateDeltaPositions (uint3 id : SV_DispatchThreadID)
 
         for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
         {
-            uint neighbour = SortedIndicesRO[j];
+            uint neighbour = j;
             float4 neighbourPosition = PositionsRO[neighbour];
             float magSq = DistanceSq(position, neighbourPosition);
             if (magSq == 0 || magSq >= interactionRadiusSq) continue;
@@ -291,63 +259,6 @@ void ApplyDeltaPositions (uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles) return;
 
     Positions[id.x] += DeltaPositions[id.x];
-}
-
-[numthreads(64,1,1)]
-void ApplyForceBuffersToVelocities (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= numParticles) return;
-
-    Velocities[id.x] += ReadForceBuffer(id.x);
-}
-
-// Evens out the velocities of nearby particles, which makes the fluid thicker, and pulls them together
-[numthreads(64,1,1)]
-void ApplyViscosity (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= numParticles) return;
-
-    float4 position = PositionsRO[id.x];
-    float4 velocity = VelocitiesRO[id.x];
-    float density = Densities[id.x];
-    uint3 cellPosition = GetCellPosition(position);
-    float4 cohesionSum = 0;
-
-    for (uint i = 0; i < 27; i++)
-    {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
-
-        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
-        {
-            uint neighbour = SortedIndicesRO[j];
-            float mag = Distance(position, PositionsRO[neighbour]);
-            if (mag > interactionRadius || mag == 0) continue;
-
-            float q = mag / interactionRadius;
-            float4 r = UnitVector(position, PositionsRO[neighbour], mag);
-
-            // Stronger where the pair has fewer neighbours, so it mostly acts at the surface. Capped at 2 for lone
-            // particles and the first step, when Densities is still 0
-            float surfaceBoost = 2.0 / max(density + Densities[neighbour], 1.0);
-            cohesionSum += surfaceBoost * CohesionKernel(mag, interactionRadius, cohesionFactor) * r;
-
-            float inwardVelocity = dot(velocity - VelocitiesRO[neighbour], r);
-            if(inwardVelocity <= 0) continue;
-
-            float4 impulse = ViscosityImpulse(dt, highViscosity, lowViscosity, q, inwardVelocity, r) * 0.5f;
-            AtomicAddForceBuffer(id.x, -impulse);
-            AtomicAddForceBuffer(neighbour, impulse);
-        }
-    }
-
-    // Fluid neighbours only, so it never pulls on the bodies and buoyancy is unchanged
-    AtomicAddForceBuffer(id.x, dt * cohesion * particleVolume * cohesionSum);
-
-    if (numBodies > 0)
-        ApplyBoundaryFriction(id.x, position, velocity, cellPosition);
 }
 
 // Keeps particles inside the tank
@@ -397,6 +308,59 @@ void CalculateVelocity (uint3 id : SV_DispatchThreadID)
     Velocities[id.x] = (Positions[id.x] - PrevPositions[id.x]) / dt;
 }
 
+// XSPH viscosity blends each velocity towards its neighbours', cohesion pulls nearby particles together, and friction
+// slows fluid sliding along the bodies. One neighbour pass for all three
+[numthreads(64,1,1)]
+void ViscosityAndCohesion (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    float4 position = PositionsRO[id.x];
+    float4 velocity = VelocitiesRO[id.x];
+    float density = Densities[id.x];
+    uint3 cellPosition = GetCellPosition(position);
+    float4 blend = 0;
+    float4 cohesionSum = 0;
+
+    for (uint i = 0; i < 27; i++)
+    {
+        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
+        uint3 neighbourPos = cellPosition + cellOffset;
+        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
+        uint cell = GetCellIndex(neighbourPos);
+
+        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
+        {
+            float magSq = DistanceSq(position, PositionsRO[j]);
+            if (magSq >= interactionRadiusSq) continue;
+
+            blend += particleVolume * Poly6(magSq, interactionRadiusSq, poly6Factor) * (VelocitiesRO[j] - velocity);
+            if (magSq == 0) continue;
+
+            // Stronger where the pair has fewer neighbours, so it mostly acts at the surface. Capped at 2 for lone particles
+            float mag = sqrt(magSq);
+            float surfaceBoost = 2.0 / max(density + Densities[j], 1.0);
+            cohesionSum += surfaceBoost * CohesionKernel(mag, interactionRadius, cohesionFactor) * UnitVector(position, PositionsRO[j], mag);
+        }
+    }
+
+    // Viscosity is a rate, so the thickness doesn't depend on the step length. Cohesion only pulls on fluid, so
+    // buoyancy is unchanged
+    float4 newVelocity = velocity + saturate(viscosity * dt) * blend + dt * cohesion * particleVolume * cohesionSum;
+    if (numBodies > 0)
+        newVelocity += BoundaryFriction(position, velocity, cellPosition);
+
+    SmoothedVelocities[id.x] = newVelocity;
+}
+
+[numthreads(64,1,1)]
+void ApplySmoothedVelocities (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    Velocities[id.x] = SmoothedVelocities[id.x];
+}
+
 // ---------- Spatial partitioning (3D: cubic cells, 27 adjacent cells) ----------
 
 uint3 GetCellPosition(float4 position)
@@ -407,12 +371,25 @@ uint3 GetCellPosition(float4 position)
     (uint)clamp(scaled.z, 0, layers - 1));
 }
 
-uint GetCellIndex(uint3 cellPosition)
+// Puts two zero bits between each of the lowest 10 bits
+uint SpreadBits(uint v)
 {
-    return cellPosition.x + cellPosition.y * columns + cellPosition.z * columns * rows;
+    v &= 0x3ff;
+    v = (v | v << 16) & 0x30000ff;
+    v = (v | v << 8) & 0x300f00f;
+    v = (v | v << 4) & 0x30c30c3;
+    v = (v | v << 2) & 0x9249249;
+    return v;
 }
 
-// Grid building: sorts particles into cells so neighbours can be found quickly
+// Cells are numbered along a Z-order (Morton) curve, so cells close in space are close in memory.
+// Matches SPValues3D.Morton
+uint GetCellIndex(uint3 cellPosition)
+{
+    return SpreadBits(cellPosition.x) | SpreadBits(cellPosition.y) << 1 | SpreadBits(cellPosition.z) << 2;
+}
+
+// Grid building: reorders particles by cell so neighbours can be found quickly
 [numthreads(64,1,1)]
 void ClearGrid (uint3 id : SV_DispatchThreadID)
 {
@@ -462,9 +439,22 @@ void Scatter (uint3 id : SV_DispatchThreadID)
     uint destination;
     InterlockedAdd(CellCursor[cellIndex], 1, destination);
 
-    SortedIndices[destination] = id.x;
+    SortedPositions[destination] = Positions[id.x];
+    SortedPrevPositions[destination] = PrevPositions[id.x];
+    SortedVelocities[destination] = Velocities[id.x];
+}
+
+// Copies the reordered particles back, so the buffers the renderers hold stay the same
+[numthreads(64,1,1)]
+void CopySortedParticles (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numParticles) return;
+
+    Positions[id.x] = SortedPositions[id.x];
+    PrevPositions[id.x] = SortedPrevPositions[id.x];
+    Velocities[id.x] = SortedVelocities[id.x];
 }
 
 // ---------- Rigid bodies ----------
-// Their pragmas and buffers have to stay in this file, it's the only one ComputeHelper reads
+// Their pragmas and buffers are declared at the top of this file
 #include "RigidBodyKernels3D.hlsl"

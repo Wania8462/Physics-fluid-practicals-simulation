@@ -6,6 +6,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 
 /// <summary>Simulation settings shown in the inspector</summary>
 [Serializable]
@@ -30,8 +31,9 @@ public struct SimulationSettings3D
     public float restDensity;
 
     [Header("Viscosity")]
-    public float highViscosity;
-    public float lowViscosity;
+    [Tooltip("XSPH viscosity: how fast each particle's velocity evens out with its neighbours', per sim second. 0 turns it off")]
+    [FormerlySerializedAs("lowViscosity")]
+    public float viscosity;
 
     [Header("Rigid bodies")]
     public float boundaryFriction;
@@ -92,7 +94,8 @@ public class SimulationManager : MonoBehaviour
     /// <summary>Sim seconds one step advances</summary>
     private float StepTime => useRealDeltaTime ? Time.deltaTime : 1 / fakeFramerate;
 
-    private Dictionary<string, int> KernelIDs;
+    /// <summary>Kernel ids by name, found the first time each kernel is used</summary>
+    private readonly Dictionary<string, int> kernelIDs = new();
     /// <summary>Every GPU buffer, by its name in Simulation.compute</summary>
     public Dictionary<string, ComputeBuffer> Buffers = new();
 
@@ -147,9 +150,7 @@ public class SimulationManager : MonoBehaviour
 
         if (replacedBuffers.Count > 0)
         {
-            foreach (ComputeBuffer buffer in replacedBuffers)
-                ComputeHelper.Release(buffer);
-
+            ComputeHelper.Release(replacedBuffers);
             replacedBuffers.Clear();
             BuffersChanged?.Invoke(this);
         }
@@ -169,11 +170,11 @@ public class SimulationManager : MonoBehaviour
         UpdateComputeSettings();
 
         if (scaleReadingWanted)
-            AsyncGPUReadback.Request(Buffers["BodyScaleForces"], request => { if (!request.hasError) scaleForces = request.GetData<Vector4>().ToArray(); });
+            Buffers["BodyScaleForces"].ReadAsync<Vector4>(data => scaleForces = data.ToArray());
         scaleReadingWanted = false;
 
         if (buoyancyWanted)
-            AsyncGPUReadback.Request(Buffers["SmoothedBodyForces"], request => { if (!request.hasError) smoothedForces = request.GetData<Vector4>().ToArray(); });
+            Buffers["SmoothedBodyForces"].ReadAsync<Vector4>(data => smoothedForces = data.ToArray());
         buoyancyWanted = false;
 
         MeasureSubmergedBodies();
@@ -192,12 +193,12 @@ public class SimulationManager : MonoBehaviour
             if (body < 0) continue;
 
             compute.SetInt("submergedBody", body);
-            compute.Dispatch(KernelIDs["MeasureSubmergedBody"], 1, 1, 1);
+            Dispatch("MeasureSubmergedBody", new int3(1, 1, 1));
         }
 
         submergedWanted.Clear();
-        AsyncGPUReadback.Request(Buffers["BodySubmergedUp"], request => { if (!request.hasError) submergedUps = request.GetData<Vector4>().ToArray(); });
-        AsyncGPUReadback.Request(Buffers["BoundaryWet"], request => { if (!request.hasError) boundaryWet = request.GetData<uint>().ToArray(); });
+        Buffers["BodySubmergedUp"].ReadAsync<Vector4>(data => submergedUps = data.ToArray());
+        Buffers["BoundaryWet"].ReadAsync<uint>(data => boundaryWet = data.ToArray());
     }
 
     private void ExecuteStep()
@@ -205,7 +206,7 @@ public class SimulationManager : MonoBehaviour
         Watcher.ExecuteWithTimer("1. Time step", SimulationStep);
     }
 
-    /// <summary>One step: forces and viscosity, the PBF solver with the bodies, then body contacts</summary>
+    /// <summary>One step: gravity, the PBF solver with the bodies, body contacts, then viscosity and cohesion</summary>
     private void SimulationStep()
     {
         float dt = StepTime;
@@ -214,18 +215,13 @@ public class SimulationManager : MonoBehaviour
 
         StepStarting?.Invoke(dt);
 
-        compute.Dispatch(KernelIDs["ExternalForces"], threadGroups);
-
-        compute.Dispatch(KernelIDs["ClearForceBuffers"], threadGroups);
-        compute.Dispatch(KernelIDs["ApplyViscosity"], threadGroups);
-        compute.Dispatch(KernelIDs["ApplyForceBuffersToVelocities"], threadGroups);
-
-        compute.Dispatch(KernelIDs["AdvancePredictedPositions"], threadGroups);
+        Dispatch("ExternalForces", threadGroups);
+        Dispatch("AdvancePredictedPositions", threadGroups);
 
         if (numBodies > 0)
         {
             DispatchPerBody("BodyAdvancePredictedStates");
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
         }
 
         BuildGrid();
@@ -234,20 +230,20 @@ public class SimulationManager : MonoBehaviour
 
         for (int i = 0; i < settings.solverIterations; i++)
         {
-            compute.Dispatch(KernelIDs["CalculateLambdas"], threadGroups);
+            Dispatch("CalculateLambdas", threadGroups);
 
             if (numBodies > 0)
-                compute.Dispatch(KernelIDs["ClearBoundaryForceBuffers"], boundaryThreadGroups);
+                Dispatch("ClearBoundaryForceBuffers", boundaryThreadGroups);
 
-            compute.Dispatch(KernelIDs["CalculateDeltaPositions"], threadGroups);
-            compute.Dispatch(KernelIDs["ApplyDeltaPositions"], threadGroups);
-            compute.Dispatch(KernelIDs["ResolveBoundaries"], threadGroups);
+            Dispatch("CalculateDeltaPositions", threadGroups);
+            Dispatch("ApplyDeltaPositions", threadGroups);
+            Dispatch("ResolveBoundaries", threadGroups);
 
             if (numBodies > 0)
             {
                 DispatchPerBody("SumCouplingForces");
                 DispatchPerBody("ApplyCouplingForces");
-                compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+                Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
             }
         }
 
@@ -256,55 +252,78 @@ public class SimulationManager : MonoBehaviour
             DispatchPerBody("SumContacts");
             DispatchPerBody("ApplyContacts");
             DispatchPerBody("BodyCalculateVelocity");
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
-            compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
+            Dispatch("ResolveBodyCollisions", threadGroups);
 
             // Same smoothing speed whatever the frame rate
-            compute.SetFloat("forceSmoothing", 1 - Mathf.Exp(-dt / forceSmoothingTime));
+            compute.SetFloat("forceSmoothing", FluidMath3D.SmoothingBlend(dt, forceSmoothingTime));
             DispatchPerBody("SmoothBodyForces");
         }
 
-        compute.Dispatch(KernelIDs["ResolveBoundaries"], threadGroups);
+        Dispatch("ResolveBoundaries", threadGroups);
 
-        compute.Dispatch(KernelIDs["CalculateVelocity"], threadGroups);
+        Dispatch("CalculateVelocity", threadGroups);
+        Dispatch("ViscosityAndCohesion", threadGroups);
+        Dispatch("ApplySmoothedVelocities", threadGroups);
     }
 
-    /// <summary>Sorts particles into grid cells for neighbour search</summary>
+    /// <summary>Reorders the particles by grid cell, so neighbours are close in memory</summary>
     private void BuildGrid()
     {
-        compute.Dispatch(KernelIDs["ClearGrid"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["CountParticles"], threadGroups);
+        Dispatch("ClearGrid", gridThreadGroups);
+        Dispatch("CountParticles", threadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(KernelIDs["ScanStep"], gridThreadGroups);
+            Dispatch("ScanStep", gridThreadGroups);
         }
 
-        compute.Dispatch(KernelIDs["ResetCursor"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["Scatter"], threadGroups);
+        Dispatch("ResetCursor", gridThreadGroups);
+        Dispatch("Scatter", threadGroups);
+        Dispatch("CopySortedParticles", threadGroups);
     }
 
     /// <summary>Sorts the boundary particles into grid cells</summary>
     private void BuildBoundaryGrid()
     {
-        compute.Dispatch(KernelIDs["ClearBoundaryGrid"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["CountBoundaryParticles"], boundaryThreadGroups);
+        Dispatch("ClearBoundaryGrid", gridThreadGroups);
+        Dispatch("CountBoundaryParticles", boundaryThreadGroups);
 
         for (int i = 0; i < numScanSteps; i++)
         {
             compute.SetInt("scanStride", 1 << i);
             compute.SetInt("scanFlip", i % 2);
-            compute.Dispatch(KernelIDs["BoundaryScanStep"], gridThreadGroups);
+            Dispatch("BoundaryScanStep", gridThreadGroups);
         }
 
-        compute.Dispatch(KernelIDs["ResetBoundaryCursor"], gridThreadGroups);
-        compute.Dispatch(KernelIDs["ScatterBoundary"], boundaryThreadGroups);
+        Dispatch("ResetBoundaryCursor", gridThreadGroups);
+        Dispatch("ScatterBoundary", boundaryThreadGroups);
     }
 
     /// <summary>Runs a body kernel with one thread group per body</summary>
-    private void DispatchPerBody(string kernel) => compute.Dispatch(KernelIDs[kernel], numBodies, 1, 1);
+    private void DispatchPerBody(string kernel) => Dispatch(kernel, new int3(numBodies, 1, 1));
+
+    private CommandBuffer markerBuffer;
+
+    /// <summary>Runs a kernel. In the editor and development builds it's labelled for GPU profilers like Nsight or PIX</summary>
+    private void Dispatch(string kernel, int3 groups)
+    {
+        if (!Debug.isDebugBuild)
+        {
+            compute.Dispatch(Kernel(kernel), groups);
+            return;
+        }
+
+        // Profilers label it with the buffer's name. Runs straight away, so it sees the same shader settings as a plain
+        // dispatch would
+        markerBuffer ??= new CommandBuffer();
+        markerBuffer.Clear();
+        markerBuffer.name = kernel;
+        markerBuffer.DispatchCompute(compute, Kernel(kernel), groups.x, groups.y, groups.z);
+        Graphics.ExecuteCommandBuffer(markerBuffer);
+    }
 
     private void OnValidate()
     {
@@ -319,13 +338,13 @@ public class SimulationManager : MonoBehaviour
     }
 
     /// <summary>Builds the particles, bodies and buffers from scratch. Also runs when R is pressed</summary>
-    private void Setup()
+    internal void Setup()
     {
         ReleaseBuffers();
 
-        KernelIDs = ComputeHelper.GetKernels(compute);
-        Buffers = ComputeHelper.GetBuffers(compute);
+        Buffers = new();
 
+        QualitySettings.maxQueuedFrames = 2;
         Application.targetFrameRate = targetFrameRate;
 
         Tank tank = Tank;
@@ -335,8 +354,9 @@ public class SimulationManager : MonoBehaviour
         numBodies = bodies.NumBodies;
         numBoundaryParticles = bodies.NumBoundaryParticles;
 
-        // Removes fluid spawned inside or too close to a body
-        float4[] positions = RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f);
+        // Removes fluid spawned inside or too close to a body, then caps the count so it's exact
+        float4[] positions = spawn.ApplyMaxParticles(
+            RigidBodies3D.RemoveParticlesInsideBodies(spawn.InitializePositions(), bodies.settings, settings.interactionRadius * 0.5f));
         numParticles = positions.Length;
         Debug.Log($"Simulation manager: {numParticles} particles");
 
@@ -346,7 +366,7 @@ public class SimulationManager : MonoBehaviour
         SetComputeSettings();
 
         threadGroups = compute.GetThreadGroups(0, numParticles);
-        gridThreadGroups = compute.GetThreadGroups(KernelIDs["ClearGrid"], SP.NumCells + 1);
+        gridThreadGroups = compute.GetThreadGroups(Kernel("ClearGrid"), SP.NumCells + 1);
         boundaryThreadGroups = compute.GetThreadGroups(0, numBoundaryParticles);
 
         // Number of passes needed to build the grid, rounded up to even
@@ -360,7 +380,7 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             BuildBoundaryGrid();
-            compute.Dispatch(KernelIDs["CalculateBoundaryVolumes"], boundaryThreadGroups);
+            Dispatch("CalculateBoundaryVolumes", boundaryThreadGroups);
         }
 
         BuffersChanged?.Invoke(this);
@@ -454,7 +474,7 @@ public class SimulationManager : MonoBehaviour
 
         // The first move of a drag and moves while paused don't count towards a throw
         float3 frameVelocity = heldBody == id && !paused ? (position - settings.bodies[id].bodyPosition) / StepTime : float3.zero;
-        heldVelocity = math.lerp(heldVelocity, frameVelocity, 1 - Mathf.Exp(-Time.deltaTime / throwSmoothingTime));
+        heldVelocity = math.lerp(heldVelocity, frameVelocity, FluidMath3D.SmoothingBlend(Time.deltaTime, throwSmoothingTime));
         heldBody = id;
 
         settings.bodies[id].bodyPosition = position;
@@ -467,6 +487,7 @@ public class SimulationManager : MonoBehaviour
     {
         CheckBodyId(id);
         float radius = settings.bodies[id].bodyRadius;
+        float3 halfExtents = settings.bodies[id].CubeHalfExtents;
 
         // Wall contacts keep a body's surface this far from the centre
         float3 walls = Tank.innerHalfSize - Spacing;
@@ -481,11 +502,9 @@ public class SimulationManager : MonoBehaviour
         for (int axis = 0; axis < 3; axis++)
         {
             float3x3 basis = new float3x3((quaternion)rotation);
-            if (math.abs(position[axis]) <= walls[axis] - CubeReach(basis, radius)[axis]) continue;
+            if (math.abs(position[axis]) <= walls[axis] - RigidBodyMath3D.BoxReach(basis, halfExtents)[axis]) continue;
 
-            int nearest = 0;
-            for (int k = 1; k < 3; k++)
-                if (math.abs(basis[k][axis]) > math.abs(basis[nearest][axis])) nearest = k;
+            int nearest = RigidBodyMath3D.MostAlignedAxis(basis, axis);
 
             Vector3 wall = Vector3.zero;
             wall[axis] = math.sign(position[axis]);
@@ -496,12 +515,9 @@ public class SimulationManager : MonoBehaviour
         state.rotation = ((quaternion)rotation).value;
         bodies.states[index] = state;
 
-        float3 reach = CubeReach(new float3x3((quaternion)rotation), radius);
+        float3 reach = RigidBodyMath3D.BoxReach(new float3x3((quaternion)rotation), halfExtents);
         return math.clamp(position, reach - walls, walls - reach);
     }
-
-    /// <summary>How far a rotated cube extends from its centre along each world axis</summary>
-    private static float3 CubeReach(float3x3 basis, float radius) => radius * (math.abs(basis.c0) + math.abs(basis.c1) + math.abs(basis.c2));
 
     /// <summary>Lets go of a dragged body, which keeps the velocity it was dragged at. Scales stay still</summary>
     internal void ReleaseBody(int id)
@@ -513,7 +529,7 @@ public class SimulationManager : MonoBehaviour
         // Its window may have closed mid-drag
         if (!HasBody(id) || bodies == null || bodies.properties[bodies.inspectorIndices.IndexOf(id)].invMass == 0) return;
 
-        SetBodyState(id, settings.bodies[id].bodyPosition, math.normalizesafe(velocity) * math.min(math.length(velocity), maxThrowSpeed));
+        SetBodyState(id, settings.bodies[id].bodyPosition, FluidMath3D.ClampLength(velocity, maxThrowSpeed));
     }
 
     /// <summary>Writes a body's position and velocity to the GPU. It stops spinning, its rotation stays as last read back</summary>
@@ -525,7 +541,7 @@ public class SimulationManager : MonoBehaviour
         float4 at = new(position, 0);
         float4 rotation = bodies.states[index].rotation;
         RigidBodyState3D state = new() { position = at, rotation = rotation, prevPosition = at, prevRotation = rotation, velocity = new float4(velocity, 0) };
-        Buffers["BodyStates"].SetData(new[] { state }, 0, index, 1);
+        Buffers["BodyStates"].SetElement(index, state);
     }
 
     /// <summary>Where a body is now. Stalls for a GPU readback</summary>
@@ -612,10 +628,8 @@ public class SimulationManager : MonoBehaviour
     {
         if (numBodies == 0) return;
 
-        RigidBodyState3D[] states = new RigidBodyState3D[numBodies];
-        Buffers["BodyStates"].GetData(states);
         bodies.states.Clear();
-        bodies.states.AddRange(states);
+        bodies.states.AddRange(Buffers["BodyStates"].Read<RigidBodyState3D>());
     }
 
     /// <summary>Recreates the body buffers after a body is added, removed or reshaped</summary>
@@ -635,12 +649,12 @@ public class SimulationManager : MonoBehaviour
         if (numBodies > 0)
         {
             // Places the boundary particles where the bodies are now
-            compute.Dispatch(KernelIDs["PlaceBoundaryParticles"], boundaryThreadGroups);
+            Dispatch("PlaceBoundaryParticles", boundaryThreadGroups);
             BuildBoundaryGrid();
-            compute.Dispatch(KernelIDs["CalculateBoundaryVolumes"], boundaryThreadGroups);
+            Dispatch("CalculateBoundaryVolumes", boundaryThreadGroups);
 
             // Pushes fluid out of any new body
-            compute.Dispatch(KernelIDs["ResolveBodyCollisions"], threadGroups);
+            Dispatch("ResolveBodyCollisions", threadGroups);
         }
     }
 
@@ -658,20 +672,19 @@ public class SimulationManager : MonoBehaviour
 
         // Each particle stands for one spawn-spacing cube of fluid
         float h = settings.interactionRadius;
-        float particleVolume = math.pow(spawn.Spacing, 3);
+        float particleVolume = FluidMath3D.ParticleVolume(spawn.Spacing);
         compute.SetFloat("particleVolume", particleVolume);
         compute.SetFloat("particleMass", settings.restDensity * particleVolume);
         compute.SetFloat("restSpacing", spawn.Spacing);
         compute.SetFloat("relaxation", settings.relaxation);
         compute.SetFloat("artificialPressure", settings.artificialPressure);
-        compute.SetFloat("poly6Factor", 315 / (64 * math.PI * math.pow(h, 9)));
-        compute.SetFloat("spikyGradFactor", 45 / (math.PI * math.pow(h, 6)));
+        compute.SetFloat("poly6Factor", FluidMath3D.Poly6Factor(h));
+        compute.SetFloat("spikyGradFactor", FluidMath3D.SpikyGradientFactor(h));
         compute.SetFloat("cohesion", settings.cohesion);
-        compute.SetFloat("cohesionFactor", 32 / (math.PI * math.pow(h, 9)));
-        compute.SetFloat("wetDistanceSq", math.pow(wetDistance * spawn.Spacing, 2));
+        compute.SetFloat("cohesionFactor", FluidMath3D.CohesionFactor(h));
+        compute.SetFloat("wetDistanceSq", math.square(wetDistance * spawn.Spacing));
 
-        compute.SetFloat("highViscosity", settings.highViscosity);
-        compute.SetFloat("lowViscosity", settings.lowViscosity);
+        compute.SetFloat("viscosity", settings.viscosity);
 
         if (numBodies > 0)
         {
@@ -706,12 +719,18 @@ public class SimulationManager : MonoBehaviour
         compute.SetInt("layers", SP.layers);
     }
 
-    /// <summary>Binds every buffer to every kernel</summary>
-    private void SetBuffers()
+    /// <summary>Binds every buffer to every kernel used so far. The rest get them when first used</summary>
+    private void SetBuffers() => compute.SetBuffers(kernelIDs.Values, Buffers);
+
+    /// <summary>A kernel's id. Binds every buffer to it the first time</summary>
+    private int Kernel(string name)
     {
-        foreach (var kernel in KernelIDs)
-            foreach (var buffer in Buffers)
-                compute.SetBuffer(kernel.Value, buffer.Key, buffer.Value);
+        if (kernelIDs.TryGetValue(name, out int id)) return id;
+
+        id = compute.FindKernel(name);
+        kernelIDs[name] = id;
+        compute.SetBuffers(new[] { id }, Buffers);
+        return id;
     }
 
     /// <summary>Creates every GPU buffer for the fluid and the bodies</summary>
@@ -724,28 +743,21 @@ public class SimulationManager : MonoBehaviour
         if (SP.NumCells <= 0)
             Debug.LogError($"Simulation manager: grid has {SP.NumCells} cells. interactionRadius is too small for the bounding box, so every neighbour query will read out of range.");
 
-        Buffers["Positions"] = ComputeHelper.CreateStructuredBufferWithData(positions);
-        Buffers["PrevPositions"] = ComputeHelper.CreateStructuredBufferWithData<float4>(numParticles);
-        Buffers["ForceBuffersX"] = ComputeHelper.CreateStructuredBufferWithData<int>(numParticles);
-        Buffers["ForceBuffersY"] = ComputeHelper.CreateStructuredBufferWithData<int>(numParticles);
-        Buffers["ForceBuffersZ"] = ComputeHelper.CreateStructuredBufferWithData<int>(numParticles);
-        Buffers["Velocities"] = ComputeHelper.CreateStructuredBufferWithData<float4>(numParticles);
+        Buffers["Positions"] = ComputeHelper.CreateBuffer(positions);
+        Buffers["PrevPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["Velocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SmoothedVelocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
-        Buffers["Densities"] = ComputeHelper.CreateStructuredBufferWithData<float>(numParticles);
-        Buffers["Lambdas"] = ComputeHelper.CreateStructuredBufferWithData<float>(numParticles);
-        Buffers["DeltaPositions"] = ComputeHelper.CreateStructuredBufferWithData<float4>(numParticles);
+        Buffers["Densities"] = ComputeHelper.CreateBuffer<float>(numParticles);
+        Buffers["Lambdas"] = ComputeHelper.CreateBuffer<float>(numParticles);
+        Buffers["DeltaPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
-        Buffers["CellStart"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
-        Buffers["ScanTemp"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
-        Buffers["CellCursor"] = ComputeHelper.CreateStructuredBufferWithData<uint>(SP.NumCells + 1);
-        Buffers["SortedIndices"] = ComputeHelper.CreateStructuredBufferWithData<uint>(numParticles);
-
-        // Read-only copies, see Simulation.compute
-        Buffers["PositionsRO"] = Buffers["Positions"];
-        Buffers["VelocitiesRO"] = Buffers["Velocities"];
-        Buffers["LambdasRO"] = Buffers["Lambdas"];
-        Buffers["CellStartRO"] = Buffers["CellStart"];
-        Buffers["SortedIndicesRO"] = Buffers["SortedIndices"];
+        Buffers["CellStart"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
+        Buffers["ScanTemp"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
+        Buffers["CellCursor"] = ComputeHelper.CreateBuffer<uint>(SP.NumCells + 1);
+        Buffers["SortedPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SortedPrevPositions"] = ComputeHelper.CreateBuffer<float4>(numParticles);
+        Buffers["SortedVelocities"] = ComputeHelper.CreateBuffer<float4>(numParticles);
 
         RigidBodies3D.CreateBuffers(Buffers, bodies, SP.NumCells);
     }
@@ -753,9 +765,7 @@ public class SimulationManager : MonoBehaviour
     /// <summary>Releases every GPU buffer</summary>
     private void ReleaseBuffers()
     {
-        // Distinct, because the read-only copies share buffers
-        foreach (var buffer in Buffers.Values.Concat(replacedBuffers).Distinct())
-            ComputeHelper.Release(buffer);
+        ComputeHelper.Release(Buffers.Values.Concat(replacedBuffers));
 
         replacedBuffers.Clear();
     }
@@ -763,6 +773,7 @@ public class SimulationManager : MonoBehaviour
     private void OnDestroy()
     {
         ReleaseBuffers();
+        markerBuffer?.Release();
     }
 
 #if UNITY_EDITOR

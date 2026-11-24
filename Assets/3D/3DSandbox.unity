@@ -221,6 +221,7 @@ MonoBehaviour:
   bodyRenderer: {fileID: 277284708}
   screenSpaceFluidRenderer: {fileID: 277284710}
   visualiser: {fileID: 0}
+  waveProjection: {fileID: 0}
   fluidRenderMode: 1
   drawSolidBodies: 1
   lightDirection: {x: -0.4, y: -1, z: 0.6}
@@ -380,6 +381,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SimulationManager
   paused: 0
+  particleRadius: 0.5
   settings:
     interactionRadius: 6
     gravity: -20
@@ -389,13 +391,16 @@ MonoBehaviour:
     artificialPressure: 0.1
     cohesion: 100
     restDensity: 1
-    highViscosity: 0
-    lowViscosity: 1
+    viscosity: 1
     boundaryFriction: 1
     bodyFriction: 1
     bodies:
     - shape: 0
       bodyRadius: 10
+      boxHalfExtents:
+        x: 0
+        y: 0
+        z: 0
       sampleDensity: 1
       bodyPosition:
         x: 80
@@ -406,9 +411,14 @@ MonoBehaviour:
         y: 0
         z: 0
       boundaryBodyMass: 500
+      fixedInPlace: 0
       scale: 0
     - shape: 1
       bodyRadius: 10
+      boxHalfExtents:
+        x: 0
+        y: 0
+        z: 0
       sampleDensity: 1
       bodyPosition:
         x: 105
@@ -419,11 +429,16 @@ MonoBehaviour:
         y: 0
         z: 0
       boundaryBodyMass: 500
+      fixedInPlace: 0
       scale: 0
-  particleRadius: 0.5
-  targetFrameRate: 60
+  targetFrameRate: 400
   useRealDeltaTime: 0
-  fakeFramerate: 120
+  fakeFramerate: 60
+  forceSmoothingTime: 0.25
+  wetDistance: 1.5
+  maxThrowSpeed: 300
+  throwSmoothingTime: 0.05
+  wallAlignSpeed: 180
   compute: {fileID: 7200000, guid: b5e4a0cf884ba434689f3c17b13c18b3, type: 3}
   spawn: {fileID: 642951341}
   numParticles: 0
@@ -460,9 +475,9 @@ MonoBehaviour:
     y: 0
     z: 0
   particleBoxSize:
-    x: 150
+    x: 300
     y: 150
-    z: 150
+    z: 300
   spacing: 3
   useJitter: 1
   jitterStrength: 0.2
@@ -556,8 +571,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1755901141}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1, z: -10}
+  m_LocalRotation: {x: 0.14690234, y: 0.024166951, z: -0.0035902155, w: 0.9888492}
+  m_LocalPosition: {x: -29.392078, y: 74.65933, z: -406.31546}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -575,7 +590,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fc8765477579a43429976d0adaf291da, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraController
-  cam: {fileID: 1755901144}
   moveSpeed: 40
   mouseSensitivity: 2
 --- !u!1660057539 &9223372036854775807

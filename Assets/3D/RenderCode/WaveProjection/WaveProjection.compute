@@ -5,15 +5,17 @@
 #pragma kernel BlurY
 #pragma kernel Light
 
-// Particle weights are whole numbers so they can be added atomically
+// Sums are whole numbers so they can be added atomically
 static const float WeightScale = 1024.0;
+static const float HeightScale = 65536.0;
 
 StructuredBuffer<float4> Positions;
-RWStructuredBuffer<uint> Counts;
+RWStructuredBuffer<uint> Counts;  // Two per column: particle weight, then weight times height
 
-RWTexture2D<float> Heights;
-RWTexture2D<float> BlurTemp;
-RWTexture2D<float> Blurred;
+// Per column: particle weight, weight times height above the floor. Buffers, as two-channel textures can't be read back here
+RWStructuredBuffer<float2> Heights;
+RWStructuredBuffer<float2> BlurTemp;
+RWTexture2D<float> Blurred;   // Water depth
 RWTexture2D<float> LightMap;
 
 uint numParticles;
@@ -21,8 +23,9 @@ uint gridWidth;
 uint gridHeight;
 float2 gridOrigin;
 float2 cellSize;
+float floorY;
+float tankHeight;
 
-float particleHeight;  // Height one particle adds to a column
 float temporalBlend;
 int blurRadiusX;
 int blurRadiusY;
@@ -30,10 +33,12 @@ float2 blurFalloff;
 float lensGain;
 float minFocus;
 
-void AddWeight(int2 cell, float weight)
+void AddWeight(int2 cell, float weight, float heightFraction)
 {
     cell = clamp(cell, int2(0, 0), int2(gridWidth, gridHeight) - 1);
-    InterlockedAdd(Counts[cell.y * gridWidth + cell.x], (uint)(weight * WeightScale + 0.5));
+    uint index = 2 * (cell.y * gridWidth + cell.x);
+    InterlockedAdd(Counts[index], (uint)(weight * WeightScale + 0.5));
+    InterlockedAdd(Counts[index + 1], (uint)(weight * heightFraction * HeightScale + 0.5));
 }
 
 float BlurredHeightAt(int x, int y)
@@ -44,37 +49,41 @@ float BlurredHeightAt(int x, int y)
 [numthreads(64,1,1)]
 void ClearCounts (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= gridWidth * gridHeight) return;
+    if (id.x >= 2 * gridWidth * gridHeight) return;
 
     Counts[id.x] = 0;
 }
 
-// Shares each particle between the four nearest columns, so counts change smoothly as it moves
+// Shares each particle between the four nearest columns, so sums change smoothly as it moves
 [numthreads(64,1,1)]
 void Deposit (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= numParticles) return;
 
-    float2 grid = (Positions[id.x].xz - gridOrigin) / cellSize - 0.5;
+    float3 position = Positions[id.x].xyz;
+    float heightFraction = saturate((position.y - floorY) / tankHeight);
+
+    float2 grid = (position.xz - gridOrigin) / cellSize - 0.5;
     int2 lower = (int2)floor(grid);
     float2 t = grid - lower;
 
-    AddWeight(lower, (1 - t.x) * (1 - t.y));
-    AddWeight(lower + int2(1, 0), t.x * (1 - t.y));
-    AddWeight(lower + int2(0, 1), (1 - t.x) * t.y);
-    AddWeight(lower + int2(1, 1), t.x * t.y);
+    AddWeight(lower, (1 - t.x) * (1 - t.y), heightFraction);
+    AddWeight(lower + int2(1, 0), t.x * (1 - t.y), heightFraction);
+    AddWeight(lower + int2(0, 1), (1 - t.x) * t.y, heightFraction);
+    AddWeight(lower + int2(1, 1), t.x * t.y, heightFraction);
 }
 
-// Height of the water in each column, averaged over time to remove particle jitter
+// Column sums averaged over time to remove particle jitter
 [numthreads(8,8,1)]
 void ResolveHeight (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gridWidth || id.y >= gridHeight) return;
 
-    float height = Counts[id.y * gridWidth + id.x] / WeightScale * particleHeight;
+    uint cell = id.y * gridWidth + id.x;
+    float2 sums = float2(Counts[2 * cell] / WeightScale, Counts[2 * cell + 1] / HeightScale * tankHeight);
 
-    // The texture holds nothing valid until it's first written
-    Heights[id.xy] = temporalBlend >= 1 ? height : lerp(Heights[id.xy], height, temporalBlend);
+    // The buffer holds nothing valid until it's first written
+    Heights[cell] = temporalBlend >= 1 ? sums : lerp(Heights[cell], sums, temporalBlend);
 }
 
 [numthreads(8,8,1)]
@@ -82,33 +91,24 @@ void BlurX (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gridWidth || id.y >= gridHeight) return;
 
-    float sum = 0;
-    float weightSum = 0;
+    float2 sum = 0;
     for (int x = -blurRadiusX; x <= blurRadiusX; x++)
-    {
-        float weight = exp(x * x * blurFalloff.x);
-        sum += Heights[uint2(clamp((int)id.x + x, 0, (int)gridWidth - 1), id.y)] * weight;
-        weightSum += weight;
-    }
+        sum += Heights[id.y * gridWidth + clamp((int)id.x + x, 0, (int)gridWidth - 1)] * exp(x * x * blurFalloff.x);
 
-    BlurTemp[id.xy] = sum / weightSum;
+    BlurTemp[id.y * gridWidth + id.x] = sum;
 }
 
+// Depth is twice the particles' average height, so sparse columns by walls and bodies don't read as shallow
 [numthreads(8,8,1)]
 void BlurY (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gridWidth || id.y >= gridHeight) return;
 
-    float sum = 0;
-    float weightSum = 0;
+    float2 sum = 0;
     for (int y = -blurRadiusY; y <= blurRadiusY; y++)
-    {
-        float weight = exp(y * y * blurFalloff.y);
-        sum += BlurTemp[uint2(id.x, clamp((int)id.y + y, 0, (int)gridHeight - 1))] * weight;
-        weightSum += weight;
-    }
+        sum += BlurTemp[clamp((int)id.y + y, 0, (int)gridHeight - 1) * gridWidth + id.x] * exp(y * y * blurFalloff.y);
 
-    Blurred[id.xy] = sum / weightSum;
+    Blurred[id.xy] = sum.x > 1e-4 ? 2 * sum.y / sum.x : 0;
 }
 
 // How much light reaches the plane under each column. Crests curve down, so they focus light and read above 1

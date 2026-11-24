@@ -109,6 +109,10 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         thicknessDisplayScale = 100
     };
 
+    /// <summary>Profiler sample per pass, run in this order, so GPU profilers time each one separately</summary>
+    private static readonly string[] PassNames = { "SSF Depth", "SSF Thickness", "SSF Smooth depth", "SSF Smooth thickness", "SSF Composite" };
+
+    /// <summary>One buffer for every pass, since the temporary textures must be allocated in the buffer that uses them</summary>
     private CommandBuffer cmd;
     private Material particleMaterial;
     private Material smoothMaterial;
@@ -161,7 +165,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         float renderRadius = settings.renderRadiusScale * spacing;
         particleMaterial.SetFloat(ParticleRenderRadiusId, renderRadius);
         // Each particle adds its real volume (one spacing cube) to the thickness, whatever size it's drawn
-        particleMaterial.SetFloat(ThicknessScaleId, Mathf.Pow(spacing, 3) / (4f / 3f * Mathf.PI * Mathf.Pow(renderRadius, 3)));
+        particleMaterial.SetFloat(ThicknessScaleId, FluidMath3D.ParticleVolume(spacing) / RigidBodyMath3D.SphereVolume(renderRadius));
         smoothMaterial.SetFloat(SmoothingRadiusId, settings.smoothingRadiusScale * spacing);
         smoothMaterial.SetFloat(DepthRangeSigmaId, settings.depthRangeScale * spacing);
         smoothMaterial.SetFloat(MaxScreenRadiusId, settings.maxScreenRadius);
@@ -172,28 +176,24 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
         compositeMaterial.SetFloat(DepthDisplayScaleId, settings.depthDisplayScale);
         compositeMaterial.SetFloat(ThicknessDisplayScaleId, settings.thicknessDisplayScale);
 
-        cmd.Clear();
-
         // Depth of the nearest fluid surface at each pixel
-        cmd.BeginSample("SSF Depth");
+        StartPass(0);
         cmd.GetTemporaryRT(FluidDepthTexId, -1, -1, 24, FilterMode.Point, RenderTextureFormat.RGFloat);
         cmd.SetRenderTarget(FluidDepthTexId);
         cmd.ClearRenderTarget(true, true, NoDepthColor);
-        DrawOccluders();
+        DrawOccluders(cmd);
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, depthPass, MeshTopology.Triangles, 6, numParticles);
-        cmd.EndSample("SSF Depth");
 
         // How much fluid each pixel looks through, at half resolution to save time
-        cmd.BeginSample("SSF Thickness");
+        StartPass(1);
         cmd.GetTemporaryRT(FluidThicknessTexId, -2, -2, 24, FilterMode.Bilinear, RenderTextureFormat.RHalf);
         cmd.SetRenderTarget(FluidThicknessTexId);
         cmd.ClearRenderTarget(true, true, Color.clear);
-        DrawOccluders();
+        DrawOccluders(cmd);
         cmd.DrawProcedural(Matrix4x4.identity, particleMaterial, thicknessPass, MeshTopology.Triangles, 6, numParticles);
-        cmd.EndSample("SSF Thickness");
 
         // Smooth the depth so the particles blend into one surface
-        cmd.BeginSample("SSF Smooth depth");
+        StartPass(2);
         cmd.GetTemporaryRT(FluidDepthTempId, -1, -1, 0, FilterMode.Point, RenderTextureFormat.RGFloat);
         for (int i = 0; i < settings.smoothingIterations; i++)
         {
@@ -201,32 +201,41 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
             cmd.Blit(FluidDepthTempId, FluidDepthTexId, smoothMaterial, bilateralVPass);
         }
         cmd.ReleaseTemporaryRT(FluidDepthTempId);
-        cmd.EndSample("SSF Smooth depth");
 
+        StartPass(3);
         if (settings.debugView != DebugView.Thickness)
         {
-            cmd.BeginSample("SSF Smooth thickness");
             cmd.GetTemporaryRT(FluidThicknessTempId, -2, -2, 0, FilterMode.Bilinear, RenderTextureFormat.RHalf);
             cmd.Blit(FluidThicknessTexId, FluidThicknessTempId, smoothMaterial, gaussHPass);
             cmd.Blit(FluidThicknessTempId, FluidThicknessTexId, smoothMaterial, gaussVPass);
             cmd.ReleaseTemporaryRT(FluidThicknessTempId);
-            cmd.EndSample("SSF Smooth thickness");
         }
 
         // Shade the fluid over a copy of the scene
-        cmd.BeginSample("SSF Composite");
+        StartPass(4);
         cmd.GetTemporaryRT(FluidSceneTexId, -1, -1, 0, FilterMode.Bilinear, RenderTextureFormat.DefaultHDR);
         cmd.Blit(BuiltinRenderTextureType.CameraTarget, FluidSceneTexId);
         cmd.Blit(FluidSceneTexId, BuiltinRenderTextureType.CameraTarget, compositeMaterial, compositePass);
-        cmd.EndSample("SSF Composite");
 
         cmd.ReleaseTemporaryRT(FluidDepthTexId);
         cmd.ReleaseTemporaryRT(FluidThicknessTexId);
         cmd.ReleaseTemporaryRT(FluidSceneTexId);
+        cmd.EndSample(PassNames[^1]);
+    }
+
+    /// <summary>Starts a pass's profiler sample, emptying the buffer first for the first pass</summary>
+    private void StartPass(int pass)
+    {
+        if (pass == 0)
+            cmd.Clear();
+        else
+            cmd.EndSample(PassNames[pass - 1]);
+
+        cmd.BeginSample(PassNames[pass]);
     }
 
     /// <summary>Writes the depth of everything that hides fluid behind it</summary>
-    private void DrawOccluders()
+    private void DrawOccluders(CommandBuffer cmd)
     {
         bodyRenderer.DrawDepth(cmd);
 
@@ -257,7 +266,7 @@ public class ScreenSpaceFluidRenderer : MonoBehaviour
 
     private void OnEnable()
     {
-        cmd = new CommandBuffer { name = "Screen Space Fluid" };
+        cmd = new CommandBuffer { name = "SSF" };
         if (cam != null)
             cam.AddCommandBuffer(CameraEvent.AfterForwardAlpha, cmd);
         Camera.onPreRender += SetCameraGlobals;
