@@ -10,6 +10,7 @@
 /[Rr]ecordings/
 /[Pp]rofiler[Cc]aptures/
 /[Aa]ssets/_[Rr]ecovery/
+/[Aa]ssets/_[Rr]ecovery.meta
 
 # Uncomment to ignore Asset Store Tools
 # /[Aa]ssets/AssetStoreTools*
@@ -90,3 +91,6 @@ ignore.conf
 
 # AI
 .claude/
+
+# Test reports
+*.csv

@@ -101,6 +101,12 @@ public class WindowManager : MonoBehaviour
     /// <summary>The wave generator's window, null when it's closed</summary>
     private Window waveWindow;
 
+    /// <summary>The open warning and its message, null when there's none</summary>
+    private Window warningWindow;
+    private string warningMessage;
+    /// <summary>How much bigger a warning is than other windows</summary>
+    private const float WarningScale = 3f;
+
     /// <summary>Each depth meter's window, null for one that isn't out. Window w owns rays 2w and 2w + 1</summary>
     private readonly Window[] depthWindows = new Window[DepthMeters.MaxMeters / 2];
     /// <summary>The depth readings last shown in the windows</summary>
@@ -180,6 +186,12 @@ public class WindowManager : MonoBehaviour
     /// <summary>Spawns a body with a window to edit its mass, volume, material and shape</summary>
     public void CreateObjectWindow()
     {
+        if (!api.CanAddBody())
+        {
+            CreateBodyLimitWarning();
+            return;
+        }
+
         const int Mass = 0, Volume = ObjectVolume, Density = 2, Shape = 3;
         const int Wood = 1;
         const float Litres = 2;
@@ -225,6 +237,44 @@ public class WindowManager : MonoBehaviour
         {
             api.RemoveBody(id);
             objectWindows.Remove((window, id));
+        };
+    }
+
+    /// <summary>Tells the user every body slot is taken</summary>
+    private void CreateBodyLimitWarning()
+    {
+        CreateWarningWindow($"Can't spawn more than {RigidBodies3D.MaxBodies} objects.\nRemove something before spawning more.");
+    }
+
+    /// <summary>A warning in the middle of the screen that stays until closed. Each line of the message is a row, only one warning shows at a time</summary>
+    public void CreateWarningWindow(string message)
+    {
+        if (warningWindow)
+        {
+            if (warningMessage == message)
+            {
+                warningWindow.transform.SetAsLastSibling();
+                return;
+            }
+            warningWindow.Close();
+        }
+
+        Window window = CreateWindow("Warning", message.Split('\n')
+            .Select(line => new Field { name = line, fieldType = FieldType.Text })
+            .Append(new Field { fieldType = FieldType.Buttons, options = new[] { "Close" } })
+            .ToArray());
+        // Bigger than other windows so it stands out. It grows from this size in Start, so the open animation still plays
+        window.transform.localScale *= WarningScale;
+        Vector2 offset = new Vector2(Screen.width, Screen.height) / 2 - window.Bounds().center;
+        window.transform.position += (Vector3)offset;
+        window.FieldChanged += _ => window.Close();
+
+        warningWindow = window;
+        warningMessage = message;
+        window.Closed += () =>
+        {
+            if (warningWindow == window)
+                warningWindow = null;
         };
     }
 
@@ -682,6 +732,12 @@ public class WindowManager : MonoBehaviour
         int scale = Array.FindIndex(scaleWindows, window => !window);
         if (scale < 0)
             return;
+
+        if (!api.CanAddBody())
+        {
+            CreateBodyLimitWarning();
+            return;
+        }
 
         api.AddScale(scale);
         Window window = CreateWindow($"Scale {scale + 1}",

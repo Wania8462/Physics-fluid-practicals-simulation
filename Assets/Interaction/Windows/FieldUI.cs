@@ -14,6 +14,8 @@ public class FieldUI : MonoBehaviour
     private const float RowPerText = 1.45f, CaptionRowPerText = 1.3f;
     /// <summary>A unit's text size as a part of the label's, and the least it shrinks to as a part of that</summary>
     private const float UnitTextScale = 0.8f, SmallestUnitFit = 0.5f;
+    /// <summary>A text field's size as a part of the main text's</summary>
+    private const float TextFieldScale = 0.9f;
     /// <summary>How far left of its place in the prefab the unit sits, to keep it off the window's edge</summary>
     private const float UnitNudge = 5;
 
@@ -36,6 +38,7 @@ public class FieldUI : MonoBehaviour
             FieldType.Dropdown => 2 * Row + 2 * Pad + Pad / 2,
             FieldType.Separator => 2 * Pad,
             FieldType.Graph => GraphTop + PlotHeight + GraphBottom,
+            FieldType.Text => Row + 3 * Pad,
             _ => Row + 2 * Pad,
         };
     }
@@ -107,6 +110,7 @@ public class FieldUI : MonoBehaviour
     {
         foreach (TMP_Text text in GetComponentsInChildren<TMP_Text>(true))
             text.fontSize = UITheme.Current.sizeMain;
+        SizeText();
 
         foreach (TMP_Text caption in new[] { minText, maxText, graphHigh, graphLow, graphOldest, graphNewest })
         {
@@ -132,6 +136,13 @@ public class FieldUI : MonoBehaviour
         unit.enableAutoSizing = true;
         unit.fontSizeMax = size;
         unit.fontSizeMin = size * SmallestUnitFit;
+    }
+
+    /// <summary>A text field's line is smaller than other labels</summary>
+    private void SizeText()
+    {
+        if (field.fieldType == FieldType.Text)
+            label.fontSize = UITheme.Current.sizeMain * TextFieldScale;
     }
 
     private static void MakeCaption(TMP_Text text)
@@ -179,8 +190,17 @@ public class FieldUI : MonoBehaviour
                 buttonTexts[i].text = field.options[i];
         }
 
-        // Nothing sits beside a foldout's or graph's label, so it can use the whole row
-        if (isFoldout || isGraph)
+        // A text line sits a pad lower, so it doesn't crowd the title bar, and in the middle of the row
+        bool isText = field.fieldType == FieldType.Text;
+        if (isText)
+        {
+            Place(label.rectTransform, 2 * Pad, Row);
+            label.horizontalAlignment = HorizontalAlignmentOptions.Center;
+            SizeText();
+        }
+
+        // Nothing sits beside a foldout's, graph's or text's label, so it can use the whole row
+        if (isFoldout || isGraph || isText)
         {
             RectTransform labelRect = label.rectTransform;
             labelRect.sizeDelta = new Vector2(((RectTransform)transform).sizeDelta.x - 2 * labelRect.anchoredPosition.x, labelRect.sizeDelta.y);

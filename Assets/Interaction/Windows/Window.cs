@@ -17,7 +17,9 @@ public enum FieldType
     Separator,
     Foldout,
     Graph,
-    Buttons
+    Buttons,
+    /// <summary>Just its name, as a line of text</summary>
+    Text
 }
 
 /// <summary>One field of a window</summary>
@@ -275,7 +277,7 @@ public class Window : MonoBehaviour
     }
 
     /// <summary>The window on screen, without its body when minimised</summary>
-    private Rect Bounds()
+    public Rect Bounds()
     {
         Vector3[] bar = new Vector3[4], body = new Vector3[4];
         top.GetWorldCorners(bar);
