@@ -85,6 +85,7 @@ RWStructuredBuffer<uint> BoundaryWet;
 StructuredBuffer<float4> PositionsRO;
 StructuredBuffer<float4> VelocitiesRO;
 StructuredBuffer<float> LambdasRO;
+StructuredBuffer<float> DensitiesRO;
 StructuredBuffer<uint> CellStartRO;
 StructuredBuffer<float4> BoundaryPositionsRO;
 StructuredBuffer<float4> BoundaryVelocitiesRO;
@@ -135,12 +136,25 @@ const float forceSmoothing;
 const uint submergedBody;
 const float wetDistanceSq;
 
+// Cell index of a neighbour that's off the grid
+static const uint OffGrid = 0xffffffff;
+
+// Morton bits of the cells before, at and after a particle's cell along each axis, already shifted into place
+struct CellNeighbourhood
+{
+    uint3 x;
+    uint3 y;
+    uint3 z;
+};
+
 uint3 GetCellPosition(float4 position);
 uint GetCellIndex(uint3 cellPosition);
+CellNeighbourhood GetNeighbourhood(uint3 cellPosition);
+uint NeighbourCell(CellNeighbourhood neighbourhood, uint i);
 
-void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient);
-void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta);
-float4 BoundaryFriction(float4 position, float4 velocity, uint3 cellPosition);
+void AddBoundaryDensity(float3 position, uint cell, inout float density, inout float3 gradient);
+void AddBoundaryCorrection(float3 position, uint cell, float lambda, inout float3 delta);
+void AddBoundaryFriction(float3 position, float3 velocity, uint cell, inout float3 friction);
 
 // Applies gravity
 [numthreads(64,1,1)]
@@ -164,44 +178,51 @@ void CalculateLambdas (uint3 id : SV_DispatchThreadID)
     if (id.x >= numParticles) return;
 
     float4 position = PositionsRO[id.x];
-    uint3 cellPosition = GetCellPosition(position);
+    CellNeighbourhood neighbourhood = GetNeighbourhood(GetCellPosition(position));
 
+    // Sums leave out the kernel factors and the fluid particle volume, which are the same for every pair
     float density = 0;
-    float4 gradient = 0;
+    float3 gradient = 0;
     float neighbourGradients = 0;
+    float boundaryDensity = 0;
+    float3 boundaryGradient = 0;
 
     for (uint i = 0; i < 27; i++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;  // negatives wrap and fail the bounds check
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint cell = NeighbourCell(neighbourhood, i);
+        if (cell == OffGrid) continue;
 
-        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
+        uint end = CellStartRO[cell + 1];
+        for (uint j = CellStartRO[cell]; j < end; j++)
         {
-            float4 neighbourPosition = PositionsRO[j];
-            float magSq = DistanceSq(position, neighbourPosition);
+            float3 toNeighbour = PositionsRO[j].xyz - position.xyz;
+            float magSq = dot(toNeighbour, toNeighbour);
             if (magSq >= interactionRadiusSq) continue;
 
             // The particle itself counts towards its density
-            density += particleVolume * Poly6(magSq, interactionRadiusSq, poly6Factor);
+            density += Pow3(interactionRadiusSq - magSq);
             if (magSq == 0) continue;
 
-            float mag = sqrt(magSq);
-            float4 neighbourGradient = particleVolume *
-                SpikyGradient(mag, interactionRadius, spikyGradFactor, UnitVector(position, neighbourPosition, mag));
+            float invMag = rsqrt(magSq);
+            float overlap = interactionRadius - magSq * invMag;
+            float3 neighbourGradient = overlap * overlap * invMag * toNeighbour;
 
             gradient += neighbourGradient;
             neighbourGradients += dot(neighbourGradient, neighbourGradient);
         }
+
+        if (numBodies > 0)
+            AddBoundaryDensity(position.xyz, cell, boundaryDensity, boundaryGradient);
     }
 
-    if (numBodies > 0)
-        AddBoundaryDensity(position, cellPosition, density, gradient);
+    float gradientScale = particleVolume * spikyGradFactor;
+    density = (density * particleVolume + boundaryDensity) * poly6Factor;
+    gradient = (gradient * particleVolume + boundaryGradient) * spikyGradFactor;
+    neighbourGradients *= gradientScale * gradientScale;
 
     float3 wallDistances = WallDistances(position);
     density += dot(WallDensity(wallDistances), float3(1, 1, 1));
-    gradient.xyz += sign(position.xyz) * WallDensityGradient(wallDistances, interactionRadius);
+    gradient += sign(position.xyz) * WallDensityGradient(wallDistances, interactionRadius);
 
     float constraint = max(density - 1.0, 0.0);
     Densities[id.x] = density;
@@ -216,41 +237,48 @@ void CalculateDeltaPositions (uint3 id : SV_DispatchThreadID)
 
     float4 position = PositionsRO[id.x];
     float lambda = LambdasRO[id.x];
-    uint3 cellPosition = GetCellPosition(position);
+    CellNeighbourhood neighbourhood = GetNeighbourhood(GetCellPosition(position));
 
-    // Small extra push that stops particles clumping together
-    float sCorrKernel = Poly6(0.04 * interactionRadiusSq, interactionRadiusSq, poly6Factor);
-    float4 delta = 0;
+    // Small extra push that stops particles clumping together. Scales each pair's kernel against the kernel at 0.2 of
+    // the radius
+    float sCorrScale = 1.0 / (0.96 * interactionRadiusSq);
+
+    // A particle that isn't compressed doesn't push the bodies
+    bool pushesBodies = numBodies > 0 && lambda != 0;
+
+    // Fluid sum leaves out the gradient factor and particle volume, which are the same for every pair
+    float3 delta = 0;
+    float3 boundaryDelta = 0;
 
     for (uint i = 0; i < 27; i++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint cell = NeighbourCell(neighbourhood, i);
+        if (cell == OffGrid) continue;
 
-        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
+        uint end = CellStartRO[cell + 1];
+        for (uint j = CellStartRO[cell]; j < end; j++)
         {
-            uint neighbour = j;
-            float4 neighbourPosition = PositionsRO[neighbour];
-            float magSq = DistanceSq(position, neighbourPosition);
+            float3 toNeighbour = PositionsRO[j].xyz - position.xyz;
+            float magSq = dot(toNeighbour, toNeighbour);
             if (magSq == 0 || magSq >= interactionRadiusSq) continue;
 
-            float mag = sqrt(magSq);
-            float ratio = Poly6(magSq, interactionRadiusSq, poly6Factor) / sCorrKernel;
-            float sCorr = -artificialPressure * ratio * ratio * ratio * ratio;
+            float invMag = rsqrt(magSq);
+            float overlap = interactionRadius - magSq * invMag;
+            float ratio = Pow3((interactionRadiusSq - magSq) * sCorrScale);
+            float ratioSq = ratio * ratio;
+            float sCorr = -artificialPressure * ratioSq * ratioSq;
 
-            delta += particleVolume * (lambda + LambdasRO[neighbour] + sCorr) *
-                SpikyGradient(mag, interactionRadius, spikyGradFactor, UnitVector(position, neighbourPosition, mag));
+            delta += (lambda + LambdasRO[j] + sCorr) * overlap * overlap * invMag * toNeighbour;
         }
+
+        if (pushesBodies)
+            AddBoundaryCorrection(position.xyz, cell, lambda, boundaryDelta);
     }
 
-    if (numBodies > 0)
-        AddBoundaryCorrection(position, cellPosition, lambda, delta);
+    delta = delta * particleVolume * spikyGradFactor + boundaryDelta;
+    delta += lambda * sign(position.xyz) * WallDensityGradient(WallDistances(position), interactionRadius);
 
-    delta.xyz += lambda * sign(position.xyz) * WallDensityGradient(WallDistances(position), interactionRadius);
-
-    DeltaPositions[id.x] = delta;
+    DeltaPositions[id.x] = float4(delta, 0);
 }
 
 [numthreads(64,1,1)]
@@ -317,40 +345,45 @@ void ViscosityAndCohesion (uint3 id : SV_DispatchThreadID)
 
     float4 position = PositionsRO[id.x];
     float4 velocity = VelocitiesRO[id.x];
-    float density = Densities[id.x];
-    uint3 cellPosition = GetCellPosition(position);
-    float4 blend = 0;
-    float4 cohesionSum = 0;
+    float density = DensitiesRO[id.x];
+    CellNeighbourhood neighbourhood = GetNeighbourhood(GetCellPosition(position));
+
+    // Sums leave out the kernel factors and particle volume, which are the same for every pair
+    float3 blend = 0;
+    float3 cohesionSum = 0;
+    float3 friction = 0;
 
     for (uint i = 0; i < 27; i++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint cell = NeighbourCell(neighbourhood, i);
+        if (cell == OffGrid) continue;
 
-        for (uint j = CellStartRO[cell]; j < CellStartRO[cell + 1]; j++)
+        uint end = CellStartRO[cell + 1];
+        for (uint j = CellStartRO[cell]; j < end; j++)
         {
-            float magSq = DistanceSq(position, PositionsRO[j]);
+            float3 toNeighbour = PositionsRO[j].xyz - position.xyz;
+            float magSq = dot(toNeighbour, toNeighbour);
             if (magSq >= interactionRadiusSq) continue;
 
-            blend += particleVolume * Poly6(magSq, interactionRadiusSq, poly6Factor) * (VelocitiesRO[j] - velocity);
+            blend += Pow3(interactionRadiusSq - magSq) * (VelocitiesRO[j].xyz - velocity.xyz);
             if (magSq == 0) continue;
 
             // Stronger where the pair has fewer neighbours, so it mostly acts at the surface. Capped at 2 for lone particles
-            float mag = sqrt(magSq);
-            float surfaceBoost = 2.0 / max(density + Densities[j], 1.0);
-            cohesionSum += surfaceBoost * CohesionKernel(mag, interactionRadius, cohesionFactor) * UnitVector(position, PositionsRO[j], mag);
+            float invMag = rsqrt(magSq);
+            float surfaceBoost = 2.0 / max(density + DensitiesRO[j], 1.0);
+            cohesionSum += surfaceBoost * CohesionKernel(magSq * invMag, interactionRadius, 1.0) * invMag * toNeighbour;
         }
+
+        if (numBodies > 0)
+            AddBoundaryFriction(position.xyz, velocity.xyz, cell, friction);
     }
 
     // Viscosity is a rate, so the thickness doesn't depend on the step length. Cohesion only pulls on fluid, so
     // buoyancy is unchanged
-    float4 newVelocity = velocity + saturate(viscosity * dt) * blend + dt * cohesion * particleVolume * cohesionSum;
-    if (numBodies > 0)
-        newVelocity += BoundaryFriction(position, velocity, cellPosition);
+    float3 newVelocity = velocity.xyz + saturate(viscosity * dt) * particleVolume * poly6Factor * blend +
+        dt * cohesion * particleVolume * cohesionFactor * cohesionSum + friction;
 
-    SmoothedVelocities[id.x] = newVelocity;
+    SmoothedVelocities[id.x] = float4(newVelocity, velocity.w);
 }
 
 [numthreads(64,1,1)]
@@ -387,6 +420,37 @@ uint SpreadBits(uint v)
 uint GetCellIndex(uint3 cellPosition)
 {
     return SpreadBits(cellPosition.x) | SpreadBits(cellPosition.y) << 1 | SpreadBits(cellPosition.z) << 2;
+}
+
+// Morton bits of the cells before, at and after one along an axis. Off-grid cells get every bit set, so any cell index
+// built from one is OffGrid
+uint3 AxisBits(uint position, uint count, uint shift)
+{
+    uint before = position - 1;  // wraps below zero and fails the check
+    uint after = position + 1;
+    return uint3(before < count ? SpreadBits(before) << shift : OffGrid,
+                 SpreadBits(position) << shift,
+                 after < count ? SpreadBits(after) << shift : OffGrid);
+}
+
+CellNeighbourhood GetNeighbourhood(uint3 cellPosition)
+{
+    CellNeighbourhood neighbourhood;
+    neighbourhood.x = AxisBits(cellPosition.x, columns, 0);
+    neighbourhood.y = AxisBits(cellPosition.y, rows, 1);
+    neighbourhood.z = AxisBits(cellPosition.z, layers, 2);
+    return neighbourhood;
+}
+
+uint PickBits(uint3 bits, uint k)
+{
+    return k == 0 ? bits.x : (k == 1 ? bits.y : bits.z);
+}
+
+// Index of the ith of the 27 cells around a particle, or OffGrid
+uint NeighbourCell(CellNeighbourhood neighbourhood, uint i)
+{
+    return PickBits(neighbourhood.x, i % 3) | PickBits(neighbourhood.y, (i / 3) % 3) | PickBits(neighbourhood.z, i / 9);
 }
 
 // Grid building: reorders particles by cell so neighbours can be found quickly

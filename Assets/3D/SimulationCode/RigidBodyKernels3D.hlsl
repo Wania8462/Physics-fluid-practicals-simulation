@@ -32,90 +32,67 @@ float3 ReadBoundaryForceBuffer(uint index)
 
 // ---------- Fluid-body coupling, called from CalculateLambdas, CalculateDeltaPositions and ViscosityAndCohesion ----------
 
-// Adds the density that nearby rigid body surfaces give a fluid particle
-void AddBoundaryDensity(float4 position, uint3 cellPosition, inout float density, inout float4 gradient)
+// Adds the density that rigid body surfaces in one cell give a fluid particle. Leaves out the Poly6 and gradient
+// factors, which the caller applies
+void AddBoundaryDensity(float3 position, uint cell, inout float density, inout float3 gradient)
 {
-    for (uint i = 0; i < 27; i++)
+    uint end = BoundaryCellStartRO[cell + 1];
+    for (uint j = BoundaryCellStartRO[cell]; j < end; j++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;  // negatives wrap and fail the bounds check
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint boundary = BoundarySortedIndicesRO[j];
+        float3 toBoundary = BoundaryPositionsRO[boundary].xyz - position;
+        float magSq = dot(toBoundary, toBoundary);
+        if (magSq < 1e-12 || magSq > interactionRadiusSq) continue;
 
-        for (uint j = BoundaryCellStartRO[cell]; j < BoundaryCellStartRO[cell + 1]; j++)
-        {
-            uint boundary = BoundarySortedIndicesRO[j];
-            float4 boundaryPosition = BoundaryPositionsRO[boundary];
-            float magSq = DistanceSq(position, boundaryPosition);
-            float mag = sqrt(magSq);
+        float invMag = rsqrt(magSq);
+        float overlap = interactionRadius - magSq * invMag;
+        float volume = BoundaryVolumesRO[boundary];
 
-            float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
-            float volume = BoundaryVolumesRO[boundary];
-            float4 r = (boundaryPosition - position) / max(mag, 1e-9);
-
-            density += w * volume * Poly6(magSq, interactionRadiusSq, poly6Factor);
-            gradient += w * volume * SpikyGradient(mag, interactionRadius, spikyGradFactor, r);
-        }
+        density += volume * Pow3(interactionRadiusSq - magSq);
+        gradient += volume * overlap * overlap * invMag * toBoundary;
     }
 }
 
-// Pushes a fluid particle away from rigid bodies, and records the opposite push on the body
-void AddBoundaryCorrection(float4 position, uint3 cellPosition, float lambda, inout float4 delta)
+// Pushes a fluid particle away from rigid body surfaces in one cell, and records the opposite push on the body
+void AddBoundaryCorrection(float3 position, uint cell, float lambda, inout float3 delta)
 {
-    for (uint i = 0; i < 27; i++)
+    float scale = lambda * spikyGradFactor;
+    uint end = BoundaryCellStartRO[cell + 1];
+    for (uint j = BoundaryCellStartRO[cell]; j < end; j++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint boundary = BoundarySortedIndicesRO[j];
+        float3 toBoundary = BoundaryPositionsRO[boundary].xyz - position;
+        float magSq = dot(toBoundary, toBoundary);
+        if (magSq < 1e-12 || magSq > interactionRadiusSq) continue;
 
-        for (uint j = BoundaryCellStartRO[cell]; j < BoundaryCellStartRO[cell + 1]; j++)
-        {
-            uint boundary = BoundarySortedIndicesRO[j];
-            float4 boundaryPosition = BoundaryPositionsRO[boundary];
-            float magSq = DistanceSq(position, boundaryPosition);
-            float mag = sqrt(magSq);
+        float invMag = rsqrt(magSq);
+        float overlap = interactionRadius - magSq * invMag;
+        float3 correction = scale * BoundaryVolumesRO[boundary] * overlap * overlap * invMag * toBoundary;
 
-            float w = step(1e-12, magSq) * step(magSq, interactionRadiusSq);
-            float4 r = (boundaryPosition - position) / max(mag, 1e-9);
-            float4 correction = w * lambda * BoundaryVolumesRO[boundary] *
-                SpikyGradient(mag, interactionRadius, spikyGradFactor, r);
-
-            delta += correction;
-            AtomicAddBoundaryForceBuffer(boundary, -correction);
-        }
+        delta += correction;
+        AtomicAddBoundaryForceBuffer(boundary, float4(-correction, 0));
     }
 }
 
-// Velocity change that slows fluid moving into a rigid body
-float4 BoundaryFriction(float4 position, float4 velocity, uint3 cellPosition)
+// Adds the velocity change that slows fluid moving into rigid body surfaces in one cell
+void AddBoundaryFriction(float3 position, float3 velocity, uint cell, inout float3 friction)
 {
-    float4 friction = 0;
-    for (uint i = 0; i < 27; i++)
+    uint end = BoundaryCellStartRO[cell + 1];
+    for (uint j = BoundaryCellStartRO[cell]; j < end; j++)
     {
-        int3 cellOffset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
-        uint3 neighbourPos = cellPosition + cellOffset;
-        if (neighbourPos.x >= columns || neighbourPos.y >= rows || neighbourPos.z >= layers) continue;
-        uint cell = GetCellIndex(neighbourPos);
+        uint boundary = BoundarySortedIndicesRO[j];
+        float3 toBoundary = BoundaryPositionsRO[boundary].xyz - position;
+        float magSq = dot(toBoundary, toBoundary);
+        if (magSq < 1e-12 || magSq > interactionRadiusSq) continue;
 
-        for (uint j = BoundaryCellStartRO[cell]; j < BoundaryCellStartRO[cell + 1]; j++)
-        {
-            uint boundary = BoundarySortedIndicesRO[j];
-            float4 boundaryPosition = BoundaryPositionsRO[boundary];
-            float magSq = DistanceSq(position, boundaryPosition);
-            float mag = sqrt(magSq);
-            float q = mag / interactionRadius;
+        float invMag = rsqrt(magSq);
+        float3 r = toBoundary * invMag;
+        float inwardVelocity = dot(velocity - BoundaryVelocitiesRO[boundary].xyz, r);
+        if (inwardVelocity < 0) continue;
 
-            float4 r = (boundaryPosition - position) / max(mag, 1e-9);
-            float inwardVelocity = dot(velocity - BoundaryVelocitiesRO[boundary], r);
-
-            float w = step(1e-12, magSq) * step(q, 1.0) * step(0.0, inwardVelocity);
-            float4 impulse = ViscosityImpulse(dt, boundaryFriction, q, inwardVelocity, r);
-
-            friction -= w * impulse;
-        }
+        float q = magSq * invMag / interactionRadius;
+        friction -= ViscosityImpulse(dt, boundaryFriction, q, inwardVelocity, float4(r, 0)).xyz;
     }
-    return friction;
 }
 
 // ---------- Boundary grid: the same counting sort as the fluid grid ----------

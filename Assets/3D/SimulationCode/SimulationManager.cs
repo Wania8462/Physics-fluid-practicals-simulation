@@ -340,7 +340,8 @@ public class SimulationManager : MonoBehaviour
     /// <summary>Builds the particles, bodies and buffers from scratch. Also runs when R is pressed</summary>
     internal void Setup()
     {
-        ReleaseBuffers();
+        // Old buffers are released next frame, since draws already queued this frame may still use them
+        replacedBuffers.AddRange(Buffers.Values);
 
         Buffers = new();
 
@@ -386,11 +387,14 @@ public class SimulationManager : MonoBehaviour
         BuffersChanged?.Invoke(this);
     }
 
+    /// <summary>Whether another body can be added without going over RigidBodies3D.MaxBodies</summary>
+    internal bool HasFreeBodySlot => settings.bodies.Count(slot => !slot.IsEmpty) < RigidBodies3D.MaxBodies;
+
     /// <summary>Adds a body to the first free slot and returns the slot as its id</summary>
     /// <returns>The body's id</returns>
     internal int AddBody(RigidBodySettings3D body)
     {
-        if (settings.bodies.Count(slot => !slot.IsEmpty) >= RigidBodies3D.MaxBodies)
+        if (!HasFreeBodySlot)
             throw new InvalidOperationException($"At most {RigidBodies3D.MaxBodies} rigid bodies are supported.");
 
         int id = Array.FindIndex(settings.bodies, slot => slot.IsEmpty);

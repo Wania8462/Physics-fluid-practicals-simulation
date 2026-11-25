@@ -2987,12 +2987,11 @@ MonoBehaviour:
     artificialPressure: 0.1
     cohesion: 100
     restDensity: 1
-    highViscosity: 0
-    lowViscosity: 1
+    viscosity: 1
     boundaryFriction: 1
     bodyFriction: 1
     bodies: []
-  targetFrameRate: 60
+  targetFrameRate: -1
   useRealDeltaTime: 0
   fakeFramerate: 30
   forceSmoothingTime: 0.25
@@ -3025,6 +3024,7 @@ MonoBehaviour:
     y: 70
     z: 150
   spacing: 3
+  maxParticles: -1
   useJitter: 1
   jitterStrength: 0.5
   tankPadding:

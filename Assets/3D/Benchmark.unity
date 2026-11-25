@@ -394,43 +394,7 @@ MonoBehaviour:
     viscosity: 1
     boundaryFriction: 1
     bodyFriction: 1
-    bodies:
-    - shape: 0
-      bodyRadius: 10
-      boxHalfExtents:
-        x: 0
-        y: 0
-        z: 0
-      sampleDensity: 1
-      bodyPosition:
-        x: 80
-        y: 0
-        z: 100
-      bodyRotation:
-        x: 0
-        y: 0
-        z: 0
-      boundaryBodyMass: 500
-      fixedInPlace: 0
-      scale: 0
-    - shape: 1
-      bodyRadius: 10
-      boxHalfExtents:
-        x: 0
-        y: 0
-        z: 0
-      sampleDensity: 1
-      bodyPosition:
-        x: 105
-        y: 0
-        z: 100
-      bodyRotation:
-        x: 0
-        y: 0
-        z: 0
-      boundaryBodyMass: 500
-      fixedInPlace: 0
-      scale: 0
+    bodies: []
   targetFrameRate: 400
   useRealDeltaTime: 0
   fakeFramerate: 30
@@ -475,9 +439,9 @@ MonoBehaviour:
     y: 0
     z: 0
   particleBoxSize:
-    x: 150
-    y: 150
-    z: 150
+    x: 400
+    y: 400
+    z: 400
   spacing: 3
   maxParticles: -1
   useJitter: 1
@@ -638,7 +602,7 @@ Transform:
   m_GameObject: {fileID: 1755901141}
   serializedVersion: 2
   m_LocalRotation: {x: 0.14690234, y: 0.024166951, z: -0.0035902155, w: 0.9888492}
-  m_LocalPosition: {x: -28.5, y: 69.2, z: -387.7}
+  m_LocalPosition: {x: -42, y: 151, z: -658}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []

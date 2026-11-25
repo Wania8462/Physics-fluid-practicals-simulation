@@ -93,6 +93,9 @@ public class SimulationAPI : MonoBehaviour
         manager.settings.viscosity = viscosity * viscosityScale;
     }
 
+    /// <summary>Whether there's room for another body or scale</summary>
+    public bool CanAddBody() => manager.HasFreeBodySlot;
+
     /// <summary>Spawns a body in front of the camera, inside the tank</summary>
     /// <param name="volume">In m³</param>
     /// <param name="mass">In kg</param>
