@@ -1,0 +1,61 @@
+name: Unity tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch replaces the run that is still going.
+# Runs from different branches queue on the self-hosted PC, which runs one job at a time.
+concurrency:
+  group: unity-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# No license secrets: the self-hosted PC is already signed in to Unity.
+# The two jobs don't depend on each other, so a failing EditMode run never skips PlayMode
+# (a skipped job would count as passing in a required check).
+jobs:
+  editmode:
+    name: Unity EditMode tests
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          clean: false # keeps Library/ between runs so assets aren't reimported every time
+
+      - name: Run EditMode tests
+        run: unity test . --mode EditMode --output ./results/editmode.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editmode-results
+          path: results/editmode.xml
+
+  playmode:
+    name: Unity PlayMode tests
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          clean: false
+
+      - name: Run PlayMode tests
+        run: unity test . --mode PlayMode --output ./results/playmode.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playmode-results
+          path: results/playmode.xml
