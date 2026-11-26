@@ -94,6 +94,8 @@ public class Window : MonoBehaviour
 
     private readonly HashSet<int> changed = new();
     private bool closing;
+    /// <summary>Closed and shrinking away, or about to</summary>
+    internal bool IsClosing => closing;
 
     [SerializeField] private bool topBarHeld;
     private Vector3 mouseOffset;
@@ -109,7 +111,7 @@ public class Window : MonoBehaviour
     private float lastTopBarClick;
 
     /// <summary>The window's title</summary>
-    public string Title { set => title.text = value; }
+    public string Title { get => title.text; set => title.text = value; }
 
     /// <summary>Whether the user can rename the window</summary>
     public bool Renamable { set => title.interactable = value; }

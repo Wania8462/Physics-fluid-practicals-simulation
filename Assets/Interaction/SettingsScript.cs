@@ -26,21 +26,25 @@ public class SettingsScript : MonoBehaviour
     private void OnSliderChanged(float value)
     {
         AppSettings.performace = (Performace)(int)value;
+        AppSettings.Save();
     }
 
     private void OnThemeChanged(int index)
     {
         AppSettings.theme = (Theme)index;
         UIStyler.ApplyAll();
+        AppSettings.Save();
     }
 
     private void OnUnitsChanged(int index)
     {
         AppSettings.units = (Units)index;
+        AppSettings.Save();
     }
 
     private void OnColorblindChanged(int index)
     {
         AppSettings.colorblindFilter = (ColorblindFilter)index;
+        AppSettings.Save();
     }
 }
