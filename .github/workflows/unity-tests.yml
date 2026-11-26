@@ -1,0 +1,73 @@
+name: Unity tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same PR cancels the run that is still going
+concurrency:
+  group: unity-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+  UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+  UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+
+jobs:
+  test:
+    name: ${{ matrix.testMode }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        testMode: [EditMode, PlayMode]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-${{ matrix.testMode }}-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-${{ matrix.testMode }}-
+            Library-
+
+      - name: Run ${{ matrix.testMode }} tests
+        id: tests
+        uses: game-ci/unity-test-runner@v4
+        with:
+          unityVersion: auto
+          projectPath: .
+          testMode: ${{ matrix.testMode }}
+          artifactsPath: ${{ matrix.testMode }}-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.testMode }}-results
+          path: ${{ steps.tests.outputs.artifactsPath }}
+
+  # One stable check name to require in the branch protection rule
+  all-tests:
+    name: All Unity tests
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every test job passed
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Unity tests result: ${{ needs.test.result }}"
+            exit 1
+          fi
