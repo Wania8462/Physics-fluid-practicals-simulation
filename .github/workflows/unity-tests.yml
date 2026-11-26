@@ -7,67 +7,36 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A newer push to the same PR cancels the run that is still going
+# Runs on the self-hosted PC, which is already signed in to Unity, so no license secrets are needed.
+# Runs queue one after another because two Unity runs can't open the same project at once.
 concurrency:
-  group: unity-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: unity-tests
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
-env:
-  UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-  UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-  UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-
 jobs:
-  test:
-    name: ${{ matrix.testMode }} tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        testMode: [EditMode, PlayMode]
+  # The job name is the status check to require in the branch protection rule
+  all-tests:
+    name: All Unity tests
+    runs-on: self-hosted
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          clean: false # keeps Library/ between runs so assets aren't reimported every time
 
-      - uses: actions/cache@v4
-        with:
-          path: Library
-          key: Library-${{ matrix.testMode }}-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
-          restore-keys: |
-            Library-${{ matrix.testMode }}-
-            Library-
+      - name: EditMode tests
+        run: unity test . --mode EditMode --output ./results/editmode.xml
 
-      - name: Run ${{ matrix.testMode }} tests
-        id: tests
-        uses: game-ci/unity-test-runner@v4
-        with:
-          unityVersion: auto
-          projectPath: .
-          testMode: ${{ matrix.testMode }}
-          artifactsPath: ${{ matrix.testMode }}-results
+      - name: PlayMode tests
+        run: unity test . --mode PlayMode --output ./results/playmode.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.testMode }}-results
-          path: ${{ steps.tests.outputs.artifactsPath }}
-
-  # One stable check name to require in the branch protection rule
-  all-tests:
-    name: All Unity tests
-    if: always()
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail unless every test job passed
-        run: |
-          if [ "${{ needs.test.result }}" != "success" ]; then
-            echo "Unity tests result: ${{ needs.test.result }}"
-            exit 1
-          fi
+          name: test-results
+          path: results/

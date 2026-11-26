@@ -94,3 +94,5 @@ ignore.conf
 
 # Test reports
 *.csv
+# Unity test results
+/results/
