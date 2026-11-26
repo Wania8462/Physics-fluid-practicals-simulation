@@ -7,36 +7,55 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Runs on the self-hosted PC, which is already signed in to Unity, so no license secrets are needed.
-# Runs queue one after another because two Unity runs can't open the same project at once.
+# A newer push to the same branch replaces the run that is still going.
+# Runs from different branches queue on the self-hosted PC, which runs one job at a time.
 concurrency:
-  group: unity-tests
-  cancel-in-progress: false
+  group: unity-tests-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+# No license secrets: the self-hosted PC is already signed in to Unity.
+# The two jobs don't depend on each other, so a failing EditMode run never skips PlayMode
+# (a skipped job would count as passing in a required check).
 jobs:
-  # The job name is the status check to require in the branch protection rule
-  all-tests:
-    name: All Unity tests
+  editmode:
+    name: Unity EditMode tests
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
           clean: false # keeps Library/ between runs so assets aren't reimported every time
 
-      - name: EditMode tests
+      - name: Run EditMode tests
         run: unity test . --mode EditMode --output ./results/editmode.xml
 
-      - name: PlayMode tests
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editmode-results
+          path: results/editmode.xml
+
+  playmode:
+    name: Unity PlayMode tests
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          clean: false
+
+      - name: Run PlayMode tests
         run: unity test . --mode PlayMode --output ./results/playmode.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: results/
+          name: playmode-results
+          path: results/playmode.xml
