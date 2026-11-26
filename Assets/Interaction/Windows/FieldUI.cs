@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
@@ -61,6 +62,15 @@ public class FieldUI : MonoBehaviour
     private GameObject buttonRow;
     private TMP_Text[] buttonTexts;
 
+    /// <summary>Seconds a message about what was typed stays in the input box</summary>
+    internal const float ErrorSeconds = 2;
+    internal const string NotANumberMessage = "Please enter a number", TooBigMessage = "Too big", TooSmallMessage = "Too small";
+
+    private TMP_Text errorText;
+    private Coroutine errorTimer;
+    /// <summary>The message showing in the input box, null when there's none</summary>
+    internal string ErrorMessage { get; private set; }
+
     /// <summary>Raised with the field's index and new value when the user edits it</summary>
     public event Action<int, Field> Changed;
 
@@ -68,6 +78,7 @@ public class FieldUI : MonoBehaviour
     {
         slider.onValueChanged.AddListener(SetValue);
         input.onEndEdit.AddListener(OnInputEntered);
+        input.onSelect.AddListener(_ => HideError());
         dropdown.onValueChanged.AddListener(OnDropdownChanged);
         toggle.onValueChanged.AddListener(OnToggleChanged);
 
@@ -441,10 +452,81 @@ public class FieldUI : MonoBehaviour
 
     private void OnInputEntered(string text)
     {
-        if (float.TryParse(text, out float value))
-            SetValue(value);
-        else
+        if (!float.TryParse(text, out float value))
+        {
             ShowValue(field.value);
+            ShowError(NotANumberMessage);
+            return;
+        }
+
+        if (value > field.max)
+            ShowError(TooBigMessage);
+        else if (value < field.min)
+            ShowError(TooSmallMessage);
+        SetValue(value);
+    }
+
+    /// <summary>Shows a red message in the input box in place of its value for a few seconds</summary>
+    private void ShowError(string message)
+    {
+        if (!errorText)
+            errorText = CreateErrorText();
+
+        ErrorMessage = message;
+        errorText.text = message;
+        errorText.color = UITheme.Colors.error;
+        errorText.gameObject.SetActive(true);
+        input.textComponent.enabled = false;
+
+        if (errorTimer != null)
+            StopCoroutine(errorTimer);
+        errorTimer = isActiveAndEnabled ? StartCoroutine(HideErrorLater()) : null;
+    }
+
+    private IEnumerator HideErrorLater()
+    {
+        // Real time, so it still goes while the simulation is paused
+        yield return new WaitForSecondsRealtime(ErrorSeconds);
+        errorTimer = null;
+        HideError();
+    }
+
+    /// <summary>Puts the value back in the input box</summary>
+    private void HideError()
+    {
+        if (errorTimer != null)
+            StopCoroutine(errorTimer);
+        errorTimer = null;
+        ErrorMessage = null;
+
+        if (errorText)
+            errorText.gameObject.SetActive(false);
+        input.textComponent.enabled = true;
+    }
+
+    /// <summary>A copy of the input box's text that fills the box, for messages</summary>
+    private TMP_Text CreateErrorText()
+    {
+        TMP_Text text = Instantiate(input.textComponent, input.textComponent.transform.parent);
+        text.name = "Error";
+        text.raycastTarget = false;
+        text.textWrappingMode = TextWrappingModes.NoWrap;
+        text.enableAutoSizing = true;
+        text.fontSizeMax = input.textComponent.fontSize;
+        text.fontSizeMin = input.textComponent.fontSize * SmallestUnitFit;
+
+        // The input box scrolls its own text, so the copy is pinned to fill the text area instead
+        RectTransform rect = text.rectTransform;
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+        return text;
+    }
+
+    private void OnDisable()
+    {
+        // A coroutine stops with the object, so the message would otherwise never go
+        HideError();
     }
 
     private void SetValue(float value)

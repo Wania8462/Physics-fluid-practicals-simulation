@@ -2991,7 +2991,7 @@ MonoBehaviour:
     boundaryFriction: 1
     bodyFriction: 1
     bodies: []
-  targetFrameRate: -1
+  targetFrameRate: 60
   useRealDeltaTime: 0
   fakeFramerate: 30
   forceSmoothingTime: 0.25

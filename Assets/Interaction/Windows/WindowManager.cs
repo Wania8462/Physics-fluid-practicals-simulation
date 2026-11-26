@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 /// <summary>Opens the simulation's windows and lets the user drag scales and objects around</summary>
 public class WindowManager : MonoBehaviour
@@ -134,6 +135,14 @@ public class WindowManager : MonoBehaviour
     /// <summary>How many windows have been opened, which sets where the next one goes</summary>
     private int windowsOpened;
 
+    /// <summary>How see-through a spawn button is while there's no room for what it spawns</summary>
+    internal const float GreyedAlpha = 0.4f;
+    /// <summary>The side menu buttons that spawn objects and scales</summary>
+    private CanvasGroup[] objectButtons, scaleButtons;
+
+    internal const string LowFrameRateMessage = "The frame rate is low.\nTry a lower performance level in Settings.";
+    private readonly FrameRateMonitor frameRate = new();
+
     private void Awake()
     {
         // The settings card is laid out like the settings screen, so it's drawn at the same scale
@@ -141,16 +150,45 @@ public class WindowManager : MonoBehaviour
             UIStyler.MarkPage(settingsCard.transform, UITheme.Current.pageScale);
         if (sideMenu)
             UIStyler.MarkPage(sideMenu.transform, UITheme.Current.sideMenuScale);
+
+        objectButtons = FadesOfButtonsCalling(nameof(CreateObjectWindow));
+        scaleButtons = FadesOfButtonsCalling(nameof(CreateScaleWindow));
+    }
+
+    /// <summary>A fade for each button under the canvas that calls this method of the manager when clicked</summary>
+    private CanvasGroup[] FadesOfButtonsCalling(string method)
+    {
+        return canvas.GetComponentsInChildren<Button>(true)
+            .Where(button => Enumerable.Range(0, button.onClick.GetPersistentEventCount())
+                .Any(i => button.onClick.GetPersistentTarget(i) == this && button.onClick.GetPersistentMethodName(i) == method))
+            .Select(button => button.TryGetComponent(out CanvasGroup fade) ? fade : button.gameObject.AddComponent<CanvasGroup>())
+            .ToArray();
     }
 
     private void Update()
     {
+        UpdateSpawnButtons();
+        if (frameRate.Tick(Time.unscaledDeltaTime))
+            CreateWarningWindow(LowFrameRateMessage);
+
         UpdateScales();
         UpdateSubmerged();
         UpdateDepthMeters();
         UpdateStopwatches();
         DragBody();
         BringClickedWindowToFront();
+    }
+
+    /// <summary>Greys out the spawn buttons while there's no room for another object or scale. Clicking one still opens a warning saying why</summary>
+    private void UpdateSpawnButtons()
+    {
+        bool bodyRoom = api.CanAddBody();
+        bool scaleRoom = bodyRoom && Array.Exists(scaleWindows, window => !window);
+
+        foreach (CanvasGroup fade in objectButtons)
+            fade.alpha = bodyRoom ? 1 : GreyedAlpha;
+        foreach (CanvasGroup fade in scaleButtons)
+            fade.alpha = scaleRoom ? 1 : GreyedAlpha;
     }
 
     /// <summary>A clicked window comes to the front</summary>
@@ -731,7 +769,10 @@ public class WindowManager : MonoBehaviour
     {
         int scale = Array.FindIndex(scaleWindows, window => !window);
         if (scale < 0)
+        {
+            CreateWarningWindow($"Can't place more than {RigidBodies3D.MaxScales} scales.\nRemove one before placing another.");
             return;
+        }
 
         if (!api.CanAddBody())
         {
